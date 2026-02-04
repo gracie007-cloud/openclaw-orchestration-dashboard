@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -10,24 +11,26 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 
 from app.core.config import settings
 from app.integrations.openclaw_gateway import GatewayConfig as GatewayClientConfig
-from app.integrations.openclaw_gateway import ensure_session, send_message
+from app.integrations.openclaw_gateway import OpenClawGatewayError, ensure_session, openclaw_call
 from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.users import User
 
-TEMPLATE_FILES = [
-    "AGENTS.md",
-    "BOOT.md",
-    "BOOTSTRAP.md",
-    "HEARTBEAT.md",
-    "IDENTITY.md",
-    "SOUL.md",
-    "TOOLS.md",
-    "USER.md",
-]
-
 DEFAULT_HEARTBEAT_CONFIG = {"every": "10m", "target": "none"}
+
+DEFAULT_GATEWAY_FILES = frozenset(
+    {
+        "AGENTS.md",
+        "SOUL.md",
+        "TOOLS.md",
+        "IDENTITY.md",
+        "USER.md",
+        "HEARTBEAT.md",
+        "BOOTSTRAP.md",
+        "MEMORY.md",
+    }
+)
 
 
 def _repo_root() -> Path:
@@ -67,37 +70,22 @@ def _template_env() -> Environment:
     )
 
 
-def _read_templates(
-    context: dict[str, str], overrides: dict[str, str] | None = None
-) -> dict[str, str]:
-    env = _template_env()
-    templates: dict[str, str] = {}
-    override_map = overrides or {}
-    for name in TEMPLATE_FILES:
-        path = _templates_root() / name
-        override = override_map.get(name)
-        if override:
-            templates[name] = env.from_string(override).render(**context).strip()
-            continue
-        if not path.exists():
-            templates[name] = ""
-            continue
-        template = env.get_template(name)
-        templates[name] = template.render(**context).strip()
-    return templates
-
-
-def _render_file_block(name: str, content: str) -> str:
-    body = content if content else f"# {name}\n\nTODO: add content\n"
-    return f"\n{name}\n```md\n{body}\n```\n"
-
-
 def _workspace_path(agent_name: str, workspace_root: str) -> str:
     if not workspace_root:
         raise ValueError("gateway_workspace_root is required")
     root = workspace_root
     root = root.rstrip("/")
     return f"{root}/workspace-{_slugify(agent_name)}"
+
+
+def _resolve_workspace_dir(workspace_root: str, agent_name: str) -> Path:
+    if not workspace_root:
+        raise ValueError("gateway_workspace_root is required")
+    root = Path(workspace_root).expanduser().resolve()
+    workspace = Path(_workspace_path(agent_name, workspace_root)).expanduser().resolve()
+    if workspace == root or root not in workspace.parents:
+        raise ValueError("workspace path is not under workspace root")
+    return workspace
 
 
 def _build_context(
@@ -136,152 +124,220 @@ def _build_context(
     }
 
 
-def _build_file_blocks(context: dict[str, str], agent: Agent) -> str:
+def _session_key(agent: Agent) -> str:
+    if agent.openclaw_session_id:
+        return agent.openclaw_session_id
+    return f"agent:{_agent_key(agent)}:main"
+
+
+async def _supported_gateway_files(config: GatewayClientConfig) -> set[str]:
+    try:
+        agents_payload = await openclaw_call("agents.list", config=config)
+        agents = []
+        default_id = None
+        if isinstance(agents_payload, dict):
+            agents = list(agents_payload.get("agents") or [])
+            default_id = agents_payload.get("defaultId") or agents_payload.get("default_id")
+        agent_id = default_id or (agents[0].get("id") if agents else None)
+        if not agent_id:
+            return set(DEFAULT_GATEWAY_FILES)
+        files_payload = await openclaw_call(
+            "agents.files.list", {"agentId": agent_id}, config=config
+        )
+        if isinstance(files_payload, dict):
+            files = files_payload.get("files") or []
+            supported = {item.get("name") for item in files if isinstance(item, dict)}
+            return supported or set(DEFAULT_GATEWAY_FILES)
+    except OpenClawGatewayError:
+        pass
+    return set(DEFAULT_GATEWAY_FILES)
+
+
+async def _gateway_agent_files_index(
+    agent_id: str, config: GatewayClientConfig
+) -> dict[str, dict[str, Any]]:
+    try:
+        payload = await openclaw_call("agents.files.list", {"agentId": agent_id}, config=config)
+        if isinstance(payload, dict):
+            files = payload.get("files") or []
+            return {
+                item.get("name"): item
+                for item in files
+                if isinstance(item, dict) and item.get("name")
+            }
+    except OpenClawGatewayError:
+        pass
+    return {}
+
+
+def _render_agent_files(
+    context: dict[str, str],
+    agent: Agent,
+    file_names: set[str],
+    *,
+    include_bootstrap: bool,
+) -> dict[str, str]:
+    env = _template_env()
     overrides: dict[str, str] = {}
     if agent.identity_template:
         overrides["IDENTITY.md"] = agent.identity_template
     if agent.soul_template:
         overrides["SOUL.md"] = agent.soul_template
-    templates = _read_templates(context, overrides=overrides)
-    return "".join(_render_file_block(name, templates.get(name, "")) for name in TEMPLATE_FILES)
+
+    rendered: dict[str, str] = {}
+    for name in sorted(file_names):
+        if name == "BOOTSTRAP.md" and not include_bootstrap:
+            continue
+        if name == "MEMORY.md":
+            rendered[name] = "# MEMORY\n\nBootstrap pending.\n"
+            continue
+        override = overrides.get(name)
+        if override:
+            rendered[name] = env.from_string(override).render(**context).strip()
+            continue
+        path = _templates_root() / name
+        if path.exists():
+            rendered[name] = env.get_template(name).render(**context).strip()
+            continue
+        rendered[name] = ""
+    return rendered
 
 
-def build_provisioning_message(
+async def _patch_gateway_agent_list(
+    agent_id: str,
+    workspace_path: str,
+    heartbeat: dict[str, Any],
+    config: GatewayClientConfig,
+) -> None:
+    cfg = await openclaw_call("config.get", config=config)
+    if not isinstance(cfg, dict):
+        raise OpenClawGatewayError("config.get returned invalid payload")
+    base_hash = cfg.get("hash")
+    data = cfg.get("config") or cfg.get("parsed") or {}
+    if not isinstance(data, dict):
+        raise OpenClawGatewayError("config.get returned invalid config")
+    agents = data.get("agents") or {}
+    lst = agents.get("list") or []
+    if not isinstance(lst, list):
+        raise OpenClawGatewayError("config agents.list is not a list")
+
+    updated = False
+    new_list: list[dict[str, Any]] = []
+    for entry in lst:
+        if isinstance(entry, dict) and entry.get("id") == agent_id:
+            new_entry = dict(entry)
+            new_entry["workspace"] = workspace_path
+            new_entry["heartbeat"] = heartbeat
+            new_list.append(new_entry)
+            updated = True
+        else:
+            new_list.append(entry)
+    if not updated:
+        new_list.append({"id": agent_id, "workspace": workspace_path, "heartbeat": heartbeat})
+
+    patch = {"agents": {"list": new_list}}
+    params = {"raw": json.dumps(patch)}
+    if base_hash:
+        params["baseHash"] = base_hash
+    await openclaw_call("config.patch", params, config=config)
+
+
+async def _remove_gateway_agent_list(
+    agent_id: str,
+    config: GatewayClientConfig,
+) -> None:
+    cfg = await openclaw_call("config.get", config=config)
+    if not isinstance(cfg, dict):
+        raise OpenClawGatewayError("config.get returned invalid payload")
+    base_hash = cfg.get("hash")
+    data = cfg.get("config") or cfg.get("parsed") or {}
+    if not isinstance(data, dict):
+        raise OpenClawGatewayError("config.get returned invalid config")
+    agents = data.get("agents") or {}
+    lst = agents.get("list") or []
+    if not isinstance(lst, list):
+        raise OpenClawGatewayError("config agents.list is not a list")
+
+    new_list = [entry for entry in lst if not (isinstance(entry, dict) and entry.get("id") == agent_id)]
+    if len(new_list) == len(lst):
+        return
+    patch = {"agents": {"list": new_list}}
+    params = {"raw": json.dumps(patch)}
+    if base_hash:
+        params["baseHash"] = base_hash
+    await openclaw_call("config.patch", params, config=config)
+
+
+async def provision_agent(
     agent: Agent,
     board: Board,
     gateway: Gateway,
     auth_token: str,
-    confirm_token: str,
     user: User | None,
-) -> str:
-    context = _build_context(agent, board, gateway, auth_token, user)
-    file_blocks = _build_file_blocks(context, agent)
-    heartbeat_snippet = json.dumps(
-        {
-            "id": _agent_key(agent),
-            "workspace": context["workspace_path"],
-            "heartbeat": _heartbeat_config(agent),
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    return (
-        "Provision a new OpenClaw agent workspace.\n\n"
-        f"Agent name: {context['agent_name']}\n"
-        f"Agent id: {context['agent_id']}\n"
-        f"Session key: {context['session_key']}\n"
-        f"Workspace path: {context['workspace_path']}\n\n"
-        f"Base URL: {context['base_url']}\n"
-        f"Auth token: {context['auth_token']}\n\n"
-        "Steps:\n"
-        "0) IMPORTANT: Do NOT replace or repurpose the main agent. Keep "
-        f"{context['main_session_key']} unchanged and its workspace intact.\n"
-        "1) Create the workspace directory.\n"
-        "2) Write the files below with the exact contents.\n"
-        "3) Update TOOLS.md if BASE_URL/AUTH_TOKEN must change.\n"
-        "4) Leave BOOTSTRAP.md in place; the agent should run it on first start and delete it.\n"
-        "5) Register agent id in OpenClaw so it uses this workspace path "
-        "(never overwrite the main agent session).\n"
-        "   IMPORTANT: Use the configured gateway workspace root. "
-        "Workspace path must be <root>/workspace-<slug>.\n"
-        "6) Add/update the per-agent heartbeat config in the gateway config "
-        "for this agent (merge into agents.list entry):\n"
-        "```json\n"
-        f"{heartbeat_snippet}\n"
-        "```\n"
-        "Note: if any agents.list entry defines heartbeat, only those agents "
-        "run heartbeats.\n"
-        "7) After provisioning completes, confirm by calling:\n"
-        f"   POST {context['base_url']}/api/v1/agents/{context['agent_id']}/provision/confirm\n"
-        f'   Body: {{"token": "{confirm_token}", "action": "provision"}}\n\n'
-        "Files:" + file_blocks
-    )
-
-
-def build_update_message(
-    agent: Agent,
-    board: Board,
-    gateway: Gateway,
-    auth_token: str,
-    confirm_token: str,
-    user: User | None,
-) -> str:
-    context = _build_context(agent, board, gateway, auth_token, user)
-    file_blocks = _build_file_blocks(context, agent)
-    heartbeat_snippet = json.dumps(
-        {
-            "id": _agent_key(agent),
-            "workspace": context["workspace_path"],
-            "heartbeat": _heartbeat_config(agent),
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    return (
-        "Update an existing OpenClaw agent workspace.\n\n"
-        f"Agent name: {context['agent_name']}\n"
-        f"Agent id: {context['agent_id']}\n"
-        f"Session key: {context['session_key']}\n"
-        f"Workspace path: {context['workspace_path']}\n\n"
-        f"Base URL: {context['base_url']}\n"
-        f"Auth token: {context['auth_token']}\n\n"
-        "Steps:\n"
-        "0) IMPORTANT: Do NOT replace or repurpose the main agent. Keep "
-        f"{context['main_session_key']} unchanged and its workspace intact.\n"
-        "1) Locate the existing workspace directory (do NOT create a new one or change its path).\n"
-        "2) Overwrite the files below with the exact contents.\n"
-        "3) Update TOOLS.md with the new BASE_URL/AUTH_TOKEN/SESSION_KEY values.\n"
-        "4) Do NOT create a new agent or session; update the existing one in place.\n"
-        "5) Keep BOOTSTRAP.md only if it already exists; do not recreate it if missing.\n\n"
-        "   IMPORTANT: Use the configured gateway workspace root. "
-        "Workspace path must be <root>/workspace-<slug>.\n"
-        "6) Update the per-agent heartbeat config in the gateway config for this agent:\n"
-        "```json\n"
-        f"{heartbeat_snippet}\n"
-        "```\n"
-        "Note: if any agents.list entry defines heartbeat, only those agents "
-        "run heartbeats.\n"
-        "7) After the update completes (and only after files are written), confirm by calling:\n"
-        f"   POST {context['base_url']}/api/v1/agents/{context['agent_id']}/provision/confirm\n"
-        f'   Body: {{"token": "{confirm_token}", "action": "update"}}\n'
-        "   Mission Control will send the hello message only after this confirmation.\n\n"
-        "Files:" + file_blocks
-    )
-
-
-async def send_provisioning_message(
-    agent: Agent,
-    board: Board,
-    gateway: Gateway,
-    auth_token: str,
-    confirm_token: str,
-    user: User | None,
+    *,
+    action: str = "provision",
 ) -> None:
     if not gateway.url:
         return
-    if not gateway.main_session_key:
-        raise ValueError("gateway_main_session_key is required")
-    main_session = gateway.main_session_key
+    if not gateway.workspace_root:
+        raise ValueError("gateway_workspace_root is required")
     client_config = GatewayClientConfig(url=gateway.url, token=gateway.token)
-    await ensure_session(main_session, config=client_config, label="Main Agent")
-    message = build_provisioning_message(agent, board, gateway, auth_token, confirm_token, user)
-    await send_message(message, session_key=main_session, config=client_config, deliver=False)
+    session_key = _session_key(agent)
+    await ensure_session(session_key, config=client_config, label=agent.name)
+
+    agent_id = _agent_key(agent)
+    workspace_path = _workspace_path(agent.name, gateway.workspace_root)
+    heartbeat = _heartbeat_config(agent)
+    await _patch_gateway_agent_list(agent_id, workspace_path, heartbeat, client_config)
+
+    context = _build_context(agent, board, gateway, auth_token, user)
+    supported = await _supported_gateway_files(client_config)
+    existing_files = await _gateway_agent_files_index(agent_id, client_config)
+    include_bootstrap = True
+    if action == "update":
+        if not existing_files:
+            include_bootstrap = False
+        else:
+            entry = existing_files.get("BOOTSTRAP.md")
+            if entry and entry.get("missing") is True:
+                include_bootstrap = False
+
+    rendered = _render_agent_files(
+        context,
+        agent,
+        supported,
+        include_bootstrap=include_bootstrap,
+    )
+    for name, content in rendered.items():
+        if content == "":
+            continue
+        await openclaw_call(
+            "agents.files.set",
+            {"agentId": agent_id, "name": name, "content": content},
+            config=client_config,
+        )
 
 
-async def send_update_message(
+async def cleanup_agent_direct(
     agent: Agent,
-    board: Board,
     gateway: Gateway,
-    auth_token: str,
-    confirm_token: str,
-    user: User | None,
+    *,
+    delete_workspace: bool = True,
 ) -> None:
     if not gateway.url:
         return
-    if not gateway.main_session_key:
-        raise ValueError("gateway_main_session_key is required")
-    main_session = gateway.main_session_key
+    if not gateway.workspace_root:
+        raise ValueError("gateway_workspace_root is required")
     client_config = GatewayClientConfig(url=gateway.url, token=gateway.token)
-    await ensure_session(main_session, config=client_config, label="Main Agent")
-    message = build_update_message(agent, board, gateway, auth_token, confirm_token, user)
-    await send_message(message, session_key=main_session, config=client_config, deliver=False)
+
+    agent_id = _agent_key(agent)
+    await _remove_gateway_agent_list(agent_id, client_config)
+
+    session_key = _session_key(agent)
+    await openclaw_call("sessions.delete", {"key": session_key}, config=client_config)
+
+    if delete_workspace:
+        workspace_dir = _resolve_workspace_dir(gateway.workspace_root, agent.name)
+        if workspace_dir.exists():
+            shutil.rmtree(workspace_dir)
+

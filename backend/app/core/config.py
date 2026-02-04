@@ -31,4 +31,5 @@ class Settings(BaseSettings):
     log_use_utc: bool = False
 
 
+
 settings = Settings()
