@@ -1,4 +1,4 @@
-# MAIN_USER.md
+# USER.md (Main Agent)
 
 ## User
 - Name: {{ user_name }}

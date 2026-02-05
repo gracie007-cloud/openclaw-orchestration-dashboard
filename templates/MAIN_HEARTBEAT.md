@@ -4,8 +4,8 @@
 This file defines the main agent heartbeat. You are not tied to any board.
 
 ## Required inputs
-- BASE_URL (e.g. http://localhost:8000)
-- AUTH_TOKEN (agent token)
+- BASE_URL (e.g. http://localhost:8000) — see USER.md or TOOLS.md
+- AUTH_TOKEN (agent token) — see USER.md or TOOLS.md
 - AGENT_NAME
 - AGENT_ID
 

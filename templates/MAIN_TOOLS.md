@@ -1,4 +1,4 @@
-# MAIN_TOOLS.md
+# TOOLS.md (Main Agent)
 
 BASE_URL={{ base_url }}
 AUTH_TOKEN={{ auth_token }}

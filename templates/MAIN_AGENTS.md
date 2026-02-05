@@ -8,7 +8,7 @@ This workspace belongs to the **Main Agent** for this gateway. You are not tied 
 ## Every session
 Before doing anything else:
 1) Read SOUL.md (identity, boundaries)
-2) Read MAIN_USER.md (who you serve)
+2) Read USER.md (who you serve)
 3) Read memory/YYYY-MM-DD.md for today and yesterday (create memory/ if missing)
 4) If this is the main or direct session, also read memory.md
 
