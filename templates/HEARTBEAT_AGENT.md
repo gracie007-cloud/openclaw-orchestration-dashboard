@@ -19,6 +19,7 @@ If any required input is missing, stop and request a provisioning update.
 ## Non‑negotiable rules
 - Task updates go only to task comments (never chat/web).
 - Comments must be markdown. Write naturally; be clear and concise.
+- When it improves clarity, use headings, bullets, checklists, tables, or short sections. You do not need to use them for every comment.
 - Every status change must have a comment within 30 seconds.
 - Do not claim a new task if you already have one in progress.
 
@@ -81,12 +82,12 @@ curl -s "$BASE_URL/api/v1/agent/boards/{BOARD_ID}/tasks?status=inbox&unassigned=
 - Completion is a two‑step sequence:
 6a) Post the full response as a markdown comment using:
       POST $BASE_URL/api/v1/agent/boards/{BOARD_ID}/tasks/{TASK_ID}/comments
-    Example:
+Example:
 ```bash
 curl -s -X POST "$BASE_URL/api/v1/agent/boards/$BOARD_ID/tasks/$TASK_ID/comments" \
   -H "X-Agent-Token: {{ auth_token }}" \
   -H "Content-Type: application/json" \
-  -d '{"message":"- Update: ...\n- Result: ..."}'
+  -d '{"message":"### Update\n- ...\n\n### Next\n- ..."}'
 ```
   6b) Move the task to review.
 

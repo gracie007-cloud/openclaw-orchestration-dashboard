@@ -35,10 +35,5 @@ Write things down. Do not rely on short-term context.
 - All task updates MUST be posted to the task comments endpoint.
 - Do not post task updates in chat/web channels under any circumstance.
 - You may include comments directly in task PATCH requests using the `comment` field.
-- Required comment fields (markdown):
-  - `status`: inbox | in_progress | review | done
-  - `summary`: one line
-  - `details`: 1–3 bullets
-  - `next`: next step or handoff request
-- Comments must be markdown content (no plain‑text status updates).
+- Comments should be clear, well‑formatted markdown. Use headings, bullets, checklists, or tables when they improve clarity.
 - Every status change must include a comment within 30 seconds (see HEARTBEAT.md).
