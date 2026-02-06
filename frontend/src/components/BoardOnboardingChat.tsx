@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 import {
   answerOnboardingApiV1BoardsBoardIdOnboardingAnswerPost,
@@ -55,7 +56,8 @@ type Question = {
 const normalizeQuestion = (value: unknown): Question | null => {
   if (!value || typeof value !== "object") return null;
   const data = value as { question?: unknown; options?: unknown };
-  if (typeof data.question !== "string" || !Array.isArray(data.options)) return null;
+  if (typeof data.question !== "string" || !Array.isArray(data.options))
+    return null;
   const options: QuestionOption[] = data.options
     .map((option, index) => {
       if (typeof option === "string") {
@@ -64,7 +66,11 @@ const normalizeQuestion = (value: unknown): Question | null => {
       if (option && typeof option === "object") {
         const raw = option as { id?: unknown; label?: unknown };
         const label =
-          typeof raw.label === "string" ? raw.label : typeof raw.id === "string" ? raw.id : null;
+          typeof raw.label === "string"
+            ? raw.label
+            : typeof raw.id === "string"
+              ? raw.id
+              : null;
         if (!label) return null;
         return {
           id: typeof raw.id === "string" ? raw.id : String(index + 1),
@@ -80,7 +86,9 @@ const normalizeQuestion = (value: unknown): Question | null => {
 
 const parseQuestion = (messages?: NormalizedMessage[] | null) => {
   if (!messages?.length) return null;
-  const lastAssistant = [...messages].reverse().find((msg) => msg.role === "assistant");
+  const lastAssistant = [...messages]
+    .reverse()
+    .find((msg) => msg.role === "assistant");
   if (!lastAssistant?.content) return null;
   try {
     return normalizeQuestion(JSON.parse(lastAssistant.content));
@@ -107,6 +115,8 @@ export function BoardOnboardingChat({
   const [session, setSession] = useState<BoardOnboardingRead | null>(null);
   const [loading, setLoading] = useState(false);
   const [otherText, setOtherText] = useState("");
+  const [extraContext, setExtraContext] = useState("");
+  const [extraContextOpen, setExtraContextOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
 
@@ -114,13 +124,21 @@ export function BoardOnboardingChat({
     () => normalizeMessages(session?.messages),
     [session?.messages],
   );
-  const question = useMemo(() => parseQuestion(normalizedMessages), [normalizedMessages]);
-  const draft: BoardOnboardingAgentComplete | null = session?.draft_goal ?? null;
+  const question = useMemo(
+    () => parseQuestion(normalizedMessages),
+    [normalizedMessages],
+  );
+  const draft: BoardOnboardingAgentComplete | null =
+    session?.draft_goal ?? null;
 
   useEffect(() => {
     setSelectedOptions([]);
     setOtherText("");
   }, [question?.question]);
+
+  useEffect(() => {
+    if (draft) setExtraContextOpen(true);
+  }, [draft]);
 
   const startSession = useCallback(async () => {
     setLoading(true);
@@ -133,7 +151,9 @@ export function BoardOnboardingChat({
       if (result.status !== 200) throw new Error("Unable to start onboarding.");
       setSession(result.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start onboarding.");
+      setError(
+        err instanceof Error ? err.message : "Failed to start onboarding.",
+      );
     } finally {
       setLoading(false);
     }
@@ -141,7 +161,8 @@ export function BoardOnboardingChat({
 
   const refreshSession = useCallback(async () => {
     try {
-      const result = await getOnboardingApiV1BoardsBoardIdOnboardingGet(boardId);
+      const result =
+        await getOnboardingApiV1BoardsBoardIdOnboardingGet(boardId);
       if (result.status !== 200) return;
       setSession(result.data);
     } catch {
@@ -160,18 +181,21 @@ export function BoardOnboardingChat({
       setLoading(true);
       setError(null);
       try {
-        const result = await answerOnboardingApiV1BoardsBoardIdOnboardingAnswerPost(
-          boardId,
-          {
-            answer: value,
-            other_text: freeText ?? null,
-          },
-        );
+        const result =
+          await answerOnboardingApiV1BoardsBoardIdOnboardingAnswerPost(
+            boardId,
+            {
+              answer: value,
+              other_text: freeText ?? null,
+            },
+          );
         if (result.status !== 200) throw new Error("Unable to submit answer.");
         setSession(result.data);
         setOtherText("");
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to submit answer.");
+        setError(
+          err instanceof Error ? err.message : "Failed to submit answer.",
+        );
       } finally {
         setLoading(false);
       }
@@ -181,9 +205,35 @@ export function BoardOnboardingChat({
 
   const toggleOption = useCallback((label: string) => {
     setSelectedOptions((prev) =>
-      prev.includes(label) ? prev.filter((item) => item !== label) : [...prev, label]
+      prev.includes(label)
+        ? prev.filter((item) => item !== label)
+        : [...prev, label],
     );
   }, []);
+
+  const submitExtraContext = useCallback(async () => {
+    const trimmed = extraContext.trim();
+    if (!trimmed) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result =
+        await answerOnboardingApiV1BoardsBoardIdOnboardingAnswerPost(boardId, {
+          answer: "Additional context",
+          other_text: trimmed,
+        });
+      if (result.status !== 200)
+        throw new Error("Unable to submit extra context.");
+      setSession(result.data);
+      setExtraContext("");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to submit extra context.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [boardId, extraContext]);
 
   const submitAnswer = useCallback(() => {
     const trimmedOther = otherText.trim();
@@ -198,19 +248,23 @@ export function BoardOnboardingChat({
     setLoading(true);
     setError(null);
     try {
-      const result = await confirmOnboardingApiV1BoardsBoardIdOnboardingConfirmPost(
-        boardId,
-        {
-          board_type: draft.board_type ?? "goal",
-          objective: draft.objective ?? null,
-          success_metrics: draft.success_metrics ?? null,
-          target_date: draft.target_date ?? null,
-        },
-      );
-      if (result.status !== 200) throw new Error("Unable to confirm board goal.");
+      const result =
+        await confirmOnboardingApiV1BoardsBoardIdOnboardingConfirmPost(
+          boardId,
+          {
+            board_type: draft.board_type ?? "goal",
+            objective: draft.objective ?? null,
+            success_metrics: draft.success_metrics ?? null,
+            target_date: draft.target_date ?? null,
+          },
+        );
+      if (result.status !== 200)
+        throw new Error("Unable to confirm board goal.");
       onConfirmed(result.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to confirm board goal.");
+      setError(
+        err instanceof Error ? err.message : "Failed to confirm board goal.",
+      );
     } finally {
       setLoading(false);
     }
@@ -233,90 +287,147 @@ export function BoardOnboardingChat({
           <p className="text-sm text-slate-600">
             Review the lead agent draft and confirm.
           </p>
-	          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-	            <p className="font-semibold text-slate-900">Objective</p>
-	            <p className="text-slate-700">{draft.objective || "—"}</p>
-	            <p className="mt-3 font-semibold text-slate-900">Success metrics</p>
-	            <pre className="mt-1 whitespace-pre-wrap text-xs text-slate-600">
-	              {JSON.stringify(draft.success_metrics ?? {}, null, 2)}
-	            </pre>
-	            <p className="mt-3 font-semibold text-slate-900">Target date</p>
-	            <p className="text-slate-700">{draft.target_date || "—"}</p>
-	            <p className="mt-3 font-semibold text-slate-900">Board type</p>
-	            <p className="text-slate-700">{draft.board_type || "goal"}</p>
-	            {draft.user_profile ? (
-	              <>
-	                <p className="mt-4 font-semibold text-slate-900">User profile</p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Preferred name:</span>{" "}
-	                  {draft.user_profile.preferred_name || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Pronouns:</span>{" "}
-	                  {draft.user_profile.pronouns || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Timezone:</span>{" "}
-	                  {draft.user_profile.timezone || "—"}
-	                </p>
-	              </>
-	            ) : null}
-	            {draft.lead_agent ? (
-	              <>
-	                <p className="mt-4 font-semibold text-slate-900">
-	                  Lead agent preferences
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Name:</span>{" "}
-	                  {draft.lead_agent.name || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Role:</span>{" "}
-	                  {draft.lead_agent.identity_profile?.role || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">
-	                    Communication:
-	                  </span>{" "}
-	                  {draft.lead_agent.identity_profile?.communication_style || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Emoji:</span>{" "}
-	                  {draft.lead_agent.identity_profile?.emoji || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Autonomy:</span>{" "}
-	                  {draft.lead_agent.autonomy_level || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">Verbosity:</span>{" "}
-	                  {draft.lead_agent.verbosity || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">
-	                    Output format:
-	                  </span>{" "}
-	                  {draft.lead_agent.output_format || "—"}
-	                </p>
-	                <p className="text-slate-700">
-	                  <span className="font-medium text-slate-900">
-	                    Update cadence:
-	                  </span>{" "}
-	                  {draft.lead_agent.update_cadence || "—"}
-	                </p>
-	                {draft.lead_agent.custom_instructions ? (
-	                  <>
-	                    <p className="mt-3 font-semibold text-slate-900">
-	                      Custom instructions
-	                    </p>
-	                    <pre className="mt-1 whitespace-pre-wrap text-xs text-slate-600">
-	                      {draft.lead_agent.custom_instructions}
-	                    </pre>
-	                  </>
-	                ) : null}
-	              </>
-	            ) : null}
-	          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+            <p className="font-semibold text-slate-900">Objective</p>
+            <p className="text-slate-700">{draft.objective || "—"}</p>
+            <p className="mt-3 font-semibold text-slate-900">Success metrics</p>
+            <pre className="mt-1 whitespace-pre-wrap text-xs text-slate-600">
+              {JSON.stringify(draft.success_metrics ?? {}, null, 2)}
+            </pre>
+            <p className="mt-3 font-semibold text-slate-900">Target date</p>
+            <p className="text-slate-700">{draft.target_date || "—"}</p>
+            <p className="mt-3 font-semibold text-slate-900">Board type</p>
+            <p className="text-slate-700">{draft.board_type || "goal"}</p>
+            {draft.user_profile ? (
+              <>
+                <p className="mt-4 font-semibold text-slate-900">
+                  User profile
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Preferred name:
+                  </span>{" "}
+                  {draft.user_profile.preferred_name || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Pronouns:</span>{" "}
+                  {draft.user_profile.pronouns || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Timezone:</span>{" "}
+                  {draft.user_profile.timezone || "—"}
+                </p>
+              </>
+            ) : null}
+            {draft.lead_agent ? (
+              <>
+                <p className="mt-4 font-semibold text-slate-900">
+                  Lead agent preferences
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Name:</span>{" "}
+                  {draft.lead_agent.name || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Role:</span>{" "}
+                  {draft.lead_agent.identity_profile?.role || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Communication:
+                  </span>{" "}
+                  {draft.lead_agent.identity_profile?.communication_style ||
+                    "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Emoji:</span>{" "}
+                  {draft.lead_agent.identity_profile?.emoji || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Autonomy:</span>{" "}
+                  {draft.lead_agent.autonomy_level || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">Verbosity:</span>{" "}
+                  {draft.lead_agent.verbosity || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Output format:
+                  </span>{" "}
+                  {draft.lead_agent.output_format || "—"}
+                </p>
+                <p className="text-slate-700">
+                  <span className="font-medium text-slate-900">
+                    Update cadence:
+                  </span>{" "}
+                  {draft.lead_agent.update_cadence || "—"}
+                </p>
+                {draft.lead_agent.custom_instructions ? (
+                  <>
+                    <p className="mt-3 font-semibold text-slate-900">
+                      Custom instructions
+                    </p>
+                    <pre className="mt-1 whitespace-pre-wrap text-xs text-slate-600">
+                      {draft.lead_agent.custom_instructions}
+                    </pre>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-slate-900">
+                Extra context (optional)
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                onClick={() => setExtraContextOpen((prev) => !prev)}
+                disabled={loading}
+              >
+                {extraContextOpen ? "Hide" : "Add"}
+              </Button>
+            </div>
+            {extraContextOpen ? (
+              <div className="mt-2 space-y-2">
+                <Textarea
+                  className="min-h-[84px]"
+                  placeholder="Anything else the agent should know before you confirm? (constraints, context, preferences, links, etc.)"
+                  value={extraContext}
+                  onChange={(event) => setExtraContext(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (!(event.ctrlKey || event.metaKey)) return;
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    if (loading) return;
+                    void submitExtraContext();
+                  }}
+                />
+                <div className="flex items-center justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    onClick={() => void submitExtraContext()}
+                    disabled={loading || !extraContext.trim()}
+                  >
+                    {loading ? "Sending..." : "Send context"}
+                  </Button>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Tip: press Ctrl+Enter (or Cmd+Enter) to send.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-slate-600">
+                Add anything that wasn&apos;t covered in the agent&apos;s
+                questions.
+              </p>
+            )}
+          </div>
           <DialogFooter>
             <Button onClick={confirmGoal} disabled={loading}>
               Confirm goal
@@ -325,7 +436,9 @@ export function BoardOnboardingChat({
         </div>
       ) : question ? (
         <div className="space-y-3">
-          <p className="text-sm font-medium text-slate-900">{question.question}</p>
+          <p className="text-sm font-medium text-slate-900">
+            {question.question}
+          </p>
           <div className="space-y-2">
             {question.options.map((option) => {
               const isSelected = selectedOptions.includes(option.label);
@@ -358,8 +471,7 @@ export function BoardOnboardingChat({
               variant="outline"
               onClick={submitAnswer}
               disabled={
-                loading ||
-                (selectedOptions.length === 0 && !otherText.trim())
+                loading || (selectedOptions.length === 0 && !otherText.trim())
               }
             >
               {loading ? "Sending..." : "Next"}
@@ -368,10 +480,64 @@ export function BoardOnboardingChat({
               <p className="text-xs text-slate-500">Sending your answer…</p>
             ) : null}
           </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-slate-900">
+                Extra context (optional)
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                onClick={() => setExtraContextOpen((prev) => !prev)}
+                disabled={loading}
+              >
+                {extraContextOpen ? "Hide" : "Add"}
+              </Button>
+            </div>
+            {extraContextOpen ? (
+              <div className="mt-2 space-y-2">
+                <Textarea
+                  className="min-h-[84px]"
+                  placeholder="Anything else that will help the agent plan/act? (constraints, context, preferences, links, etc.)"
+                  value={extraContext}
+                  onChange={(event) => setExtraContext(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (!(event.ctrlKey || event.metaKey)) return;
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    if (loading) return;
+                    void submitExtraContext();
+                  }}
+                />
+                <div className="flex items-center justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    onClick={() => void submitExtraContext()}
+                    disabled={loading || !extraContext.trim()}
+                  >
+                    {loading ? "Sending..." : "Send context"}
+                  </Button>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Tip: press Ctrl+Enter (or Cmd+Enter) to send.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-slate-600">
+                Add anything that wasn&apos;t covered in the agent&apos;s
+                questions.
+              </p>
+            )}
+          </div>
         </div>
       ) : (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
-          {loading ? "Waiting for the lead agent..." : "Preparing onboarding..."}
+          {loading
+            ? "Waiting for the lead agent..."
+            : "Preparing onboarding..."}
         </div>
       )}
     </div>

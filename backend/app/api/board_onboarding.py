@@ -180,6 +180,10 @@ async def start_onboarding(
         "- 1 question to choose a unique name for the board lead agent (first-name style).\n"
         "- 2-4 questions to capture the user's preferences for how the board lead should work\n"
         "  (communication style, autonomy, update cadence, and output formatting).\n"
+        '- Always include a final question: "Anything else we should know?" (constraints, context,\n'
+        '  preferences). Provide an option like "Yes (I\'ll type it)" so they can fill the free-text field.\n'
+        '- If the user sends an "Additional context" message later, incorporate it and resend status=complete\n'
+        "  to update the draft (until the user confirms).\n"
         "Do NOT respond in OpenClaw chat.\n"
         "All onboarding responses MUST be sent to Mission Control via API.\n"
         f"Mission Control base URL: {base_url}\n"

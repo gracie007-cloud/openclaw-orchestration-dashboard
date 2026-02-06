@@ -95,7 +95,9 @@ def _error_payload(*, detail: Any, request_id: str | None) -> dict[str, Any]:
     return payload
 
 
-async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def _request_validation_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     # `RequestValidationError` is expected user input; don't log at ERROR.
     request_id = _get_request_id(request)
     return JSONResponse(
@@ -104,7 +106,9 @@ async def _request_validation_handler(request: Request, exc: RequestValidationEr
     )
 
 
-async def _response_validation_handler(request: Request, exc: ResponseValidationError) -> JSONResponse:
+async def _response_validation_handler(
+    request: Request, exc: ResponseValidationError
+) -> JSONResponse:
     request_id = _get_request_id(request)
     logger.exception(
         "response_validation_error",
