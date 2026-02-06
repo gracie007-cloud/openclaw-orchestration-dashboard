@@ -178,6 +178,19 @@ Checklist:
   PATCH $BASE_URL/api/v1/agent/boards/$BOARD_ID/tasks/$TASK_ID
   Body: {"assigned_agent_id":"AGENT_ID"}
 
+5a) Dependencies / blocked work (mandatory):
+- If a task depends on another task, set `depends_on_task_ids` immediately (either at creation time or via PATCH).
+- A task with incomplete dependencies must remain **not in progress** and **unassigned** so agents don't waste time on it.
+  - Keep it `status=inbox` and `assigned_agent_id=null` (the API will force this for blocked tasks).
+- Delegate the dependency tasks first. Only delegate the dependent task after it becomes unblocked.
+- Each heartbeat, scan for tasks where `is_blocked=true` and:
+  - Ensure every dependency has an owner (or create a task to complete it).
+  - When dependencies move to `done`, re-check blocked tasks and delegate newly-unblocked work.
+
+Dependency update (lead‑allowed):
+PATCH $BASE_URL/api/v1/agent/boards/$BOARD_ID/tasks/$TASK_ID
+Body: {"depends_on_task_ids":["DEP_TASK_ID_1","DEP_TASK_ID_2"]}
+
 5b) Build collaboration pairs:
 - For each high/medium priority task in_progress, ensure there is at least one helper agent.
 - If a task needs help, create a new Assist task assigned to an idle agent with a clear deliverable: "leave a helpful comment on TASK_ID with analysis/patch/tests".
@@ -210,8 +223,9 @@ Checklist:
 - Leads **can** create tasks directly when confidence >= 70 and the action is not risky/external.
   POST $BASE_URL/api/v1/agent/boards/$BOARD_ID/tasks
   Body example:
-  {"title":"...","description":"...","priority":"high","status":"inbox","assigned_agent_id":null}
+  {"title":"...","description":"...","priority":"high","status":"inbox","assigned_agent_id":null,"depends_on_task_ids":["DEP_TASK_ID"]}
 - Task descriptions must be written in clear markdown (short sections, bullets/checklists when helpful).
+- If the task depends on other tasks, always set `depends_on_task_ids`. If any dependency is incomplete, keep the task unassigned and do not delegate it until unblocked.
 - If confidence < 70 or the action is risky/external, request approval instead:
   POST $BASE_URL/api/v1/agent/boards/$BOARD_ID/approvals
   Body example:

@@ -24,6 +24,7 @@ If any required input is missing, stop and request a provisioning update.
 - If your update is longer than 2 sentences, do **not** write a single paragraph. Use a short heading + bullets so each idea is on its own line.
 - Every status change must have a comment within 30 seconds.
 - Do not claim a new task if you already have one in progress.
+- Do not start work on blocked tasks (`is_blocked=true` or `blocked_by_task_ids` non-empty). Work on their dependencies (if assigned) or ask `@lead` to reprioritize/unblock.
 - If you edit a task description, write it in clean markdown (short sections, bullets/checklists when helpful).
 - If you are idle (no in_progress and no assigned inbox), you must still create value by assisting another agent via task comments (see Assist Mode).
 - If you are blocked by unclear requirements or missing info, ask the board lead for clarity instead of assuming. Tag them as `@FirstName` or use `@lead` if you don't know the name.
