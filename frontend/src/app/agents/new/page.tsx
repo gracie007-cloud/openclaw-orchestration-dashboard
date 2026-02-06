@@ -1,10 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type listBoardsApiV1BoardsGetResponse,
+  useListBoardsApiV1BoardsGet,
+} from "@/api/generated/boards/boards";
+import { useCreateAgentApiV1AgentsPost } from "@/api/generated/agents/agents";
+import type { BoardRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
@@ -20,24 +27,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { getApiBaseUrl } from "@/lib/api-base";
 import {
   DEFAULT_IDENTITY_PROFILE,
   DEFAULT_SOUL_TEMPLATE,
 } from "@/lib/agent-templates";
-
-const apiBase = getApiBaseUrl();
-
-type Agent = {
-  id: string;
-  name: string;
-};
-
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-};
 
 type IdentityProfile = {
   role: string;
@@ -63,7 +56,7 @@ const HEARTBEAT_TARGET_OPTIONS: SearchableSelectOption[] = [
   { value: "last", label: "Last channel" },
 ];
 
-const getBoardOptions = (boards: Board[]): SearchableSelectOption[] =>
+const getBoardOptions = (boards: BoardRead[]): SearchableSelectOption[] =>
   boards.map((board) => ({
     value: board.id,
     label: board.name,
@@ -83,10 +76,9 @@ const normalizeIdentityProfile = (
 
 export default function NewAgentPage() {
   const router = useRouter();
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
 
   const [name, setName] = useState("");
-  const [boards, setBoards] = useState<Board[]>([]);
   const [boardId, setBoardId] = useState<string>("");
   const [heartbeatEvery, setHeartbeatEvery] = useState("10m");
   const [heartbeatTarget, setHeartbeatTarget] = useState("none");
@@ -94,35 +86,37 @@ export default function NewAgentPage() {
     ...DEFAULT_IDENTITY_PROFILE,
   });
   const [soulTemplate, setSoulTemplate] = useState(DEFAULT_SOUL_TEMPLATE);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadBoards = async () => {
-    if (!isSignedIn) return;
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/boards`, {
-        headers: { Authorization: token ? `Bearer ${token}` : "" },
-      });
-      if (!response.ok) {
-        throw new Error("Unable to load boards.");
-      }
-      const data = (await response.json()) as Board[];
-      setBoards(data);
-      if (!boardId && data.length > 0) {
-        setBoardId(data[0].id);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    }
-  };
+  const boardsQuery = useListBoardsApiV1BoardsGet<
+    listBoardsApiV1BoardsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+    },
+  });
 
-  useEffect(() => {
-    loadBoards();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSignedIn]);
+  const createAgentMutation = useCreateAgentApiV1AgentsPost<ApiError>({
+    mutation: {
+      onSuccess: (result) => {
+        if (result.status === 200) {
+          router.push(`/agents/${result.data.id}`);
+        }
+      },
+      onError: (err) => {
+        setError(err.message || "Something went wrong.");
+      },
+    },
+  });
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const boards = boardsQuery.data?.status === 200 ? boardsQuery.data.data : [];
+  const displayBoardId = boardId || boards[0]?.id || "";
+  const isLoading = boardsQuery.isLoading || createAgentMutation.isPending;
+  const errorMessage = error ?? boardsQuery.error?.message ?? null;
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isSignedIn) return;
     const trimmed = name.trim();
@@ -130,41 +124,27 @@ export default function NewAgentPage() {
       setError("Agent name is required.");
       return;
     }
-    if (!boardId) {
+    const resolvedBoardId = displayBoardId;
+    if (!resolvedBoardId) {
       setError("Select a board before creating an agent.");
       return;
     }
-    setIsLoading(true);
     setError(null);
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/agents`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : "",
+    createAgentMutation.mutate({
+      data: {
+        name: trimmed,
+        board_id: resolvedBoardId,
+        heartbeat_config: {
+          every: heartbeatEvery.trim() || "10m",
+          target: heartbeatTarget,
         },
-        body: JSON.stringify({
-          name: trimmed,
-          board_id: boardId,
-          heartbeat_config: {
-            every: heartbeatEvery.trim() || "10m",
-            target: heartbeatTarget,
-          },
-          identity_profile: normalizeIdentityProfile(identityProfile),
-          soul_template: soulTemplate.trim() || null,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error("Unable to create agent.");
-      }
-      const created = (await response.json()) as Agent;
-      router.push(`/agents/${created.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
+        identity_profile: normalizeIdentityProfile(identityProfile) as unknown as Record<
+          string,
+          unknown
+        > | null,
+        soul_template: soulTemplate.trim() || null,
+      },
+    });
   };
 
   return (
@@ -243,7 +223,7 @@ export default function NewAgentPage() {
                       </label>
                       <SearchableSelect
                         ariaLabel="Select board"
-                        value={boardId}
+                        value={displayBoardId}
                         onValueChange={setBoardId}
                         options={getBoardOptions(boards)}
                         placeholder="Select board"
@@ -364,9 +344,9 @@ export default function NewAgentPage() {
                 </div>
               </div>
 
-              {error ? (
+              {errorMessage ? (
                 <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-600 shadow-sm">
-                  {error}
+                  {errorMessage}
                 </div>
               ) : null}
 

@@ -5,10 +5,15 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AgentCreateHeartbeatConfig } from "./agentCreateHeartbeatConfig";
+import type { AgentCreateIdentityProfile } from "./agentCreateIdentityProfile";
 
 export interface AgentCreate {
   board_id?: string | null;
+  /** @minLength 1 */
   name: string;
   status?: string;
   heartbeat_config?: AgentCreateHeartbeatConfig;
+  identity_profile?: AgentCreateIdentityProfile;
+  identity_template?: string | null;
+  soul_template?: string | null;
 }

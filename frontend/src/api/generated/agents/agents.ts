@@ -22,16 +22,14 @@ import type {
 
 import type {
   AgentCreate,
-  AgentDeleteConfirm,
   AgentHeartbeat,
   AgentHeartbeatCreate,
-  AgentProvisionConfirm,
   AgentRead,
   AgentUpdate,
-  ConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost200,
-  ConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost200,
-  DeleteAgentApiV1AgentsAgentIdDelete200,
   HTTPValidationError,
+  OkResponse,
+  StreamAgentsApiV1AgentsStreamGetParams,
+  UpdateAgentApiV1AgentsAgentIdPatchParams,
 } from ".././model";
 
 import { customFetch } from "../../mutator";
@@ -327,6 +325,217 @@ export const useCreateAgentApiV1AgentsPost = <
   );
 };
 /**
+ * @summary Stream Agents
+ */
+export type streamAgentsApiV1AgentsStreamGetResponse200 = {
+  data: unknown;
+  status: 200;
+};
+
+export type streamAgentsApiV1AgentsStreamGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type streamAgentsApiV1AgentsStreamGetResponseSuccess =
+  streamAgentsApiV1AgentsStreamGetResponse200 & {
+    headers: Headers;
+  };
+export type streamAgentsApiV1AgentsStreamGetResponseError =
+  streamAgentsApiV1AgentsStreamGetResponse422 & {
+    headers: Headers;
+  };
+
+export type streamAgentsApiV1AgentsStreamGetResponse =
+  | streamAgentsApiV1AgentsStreamGetResponseSuccess
+  | streamAgentsApiV1AgentsStreamGetResponseError;
+
+export const getStreamAgentsApiV1AgentsStreamGetUrl = (
+  params?: StreamAgentsApiV1AgentsStreamGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/agents/stream?${stringifiedParams}`
+    : `/api/v1/agents/stream`;
+};
+
+export const streamAgentsApiV1AgentsStreamGet = async (
+  params?: StreamAgentsApiV1AgentsStreamGetParams,
+  options?: RequestInit,
+): Promise<streamAgentsApiV1AgentsStreamGetResponse> => {
+  return customFetch<streamAgentsApiV1AgentsStreamGetResponse>(
+    getStreamAgentsApiV1AgentsStreamGetUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getStreamAgentsApiV1AgentsStreamGetQueryKey = (
+  params?: StreamAgentsApiV1AgentsStreamGetParams,
+) => {
+  return [`/api/v1/agents/stream`, ...(params ? [params] : [])] as const;
+};
+
+export const getStreamAgentsApiV1AgentsStreamGetQueryOptions = <
+  TData = Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+  TError = HTTPValidationError,
+>(
+  params?: StreamAgentsApiV1AgentsStreamGetParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getStreamAgentsApiV1AgentsStreamGetQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>
+  > = ({ signal }) =>
+    streamAgentsApiV1AgentsStreamGet(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type StreamAgentsApiV1AgentsStreamGetQueryResult = NonNullable<
+  Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>
+>;
+export type StreamAgentsApiV1AgentsStreamGetQueryError = HTTPValidationError;
+
+export function useStreamAgentsApiV1AgentsStreamGet<
+  TData = Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+  TError = HTTPValidationError,
+>(
+  params: undefined | StreamAgentsApiV1AgentsStreamGetParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+          TError,
+          Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useStreamAgentsApiV1AgentsStreamGet<
+  TData = Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+  TError = HTTPValidationError,
+>(
+  params?: StreamAgentsApiV1AgentsStreamGetParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+          TError,
+          Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useStreamAgentsApiV1AgentsStreamGet<
+  TData = Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+  TError = HTTPValidationError,
+>(
+  params?: StreamAgentsApiV1AgentsStreamGetParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Stream Agents
+ */
+
+export function useStreamAgentsApiV1AgentsStreamGet<
+  TData = Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+  TError = HTTPValidationError,
+>(
+  params?: StreamAgentsApiV1AgentsStreamGetParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof streamAgentsApiV1AgentsStreamGet>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getStreamAgentsApiV1AgentsStreamGetQueryOptions(
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * @summary Get Agent
  */
 export type getAgentApiV1AgentsAgentIdGetResponse200 = {
@@ -551,17 +760,33 @@ export type updateAgentApiV1AgentsAgentIdPatchResponse =
   | updateAgentApiV1AgentsAgentIdPatchResponseSuccess
   | updateAgentApiV1AgentsAgentIdPatchResponseError;
 
-export const getUpdateAgentApiV1AgentsAgentIdPatchUrl = (agentId: string) => {
-  return `/api/v1/agents/${agentId}`;
+export const getUpdateAgentApiV1AgentsAgentIdPatchUrl = (
+  agentId: string,
+  params?: UpdateAgentApiV1AgentsAgentIdPatchParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/agents/${agentId}?${stringifiedParams}`
+    : `/api/v1/agents/${agentId}`;
 };
 
 export const updateAgentApiV1AgentsAgentIdPatch = async (
   agentId: string,
   agentUpdate: AgentUpdate,
+  params?: UpdateAgentApiV1AgentsAgentIdPatchParams,
   options?: RequestInit,
 ): Promise<updateAgentApiV1AgentsAgentIdPatchResponse> => {
   return customFetch<updateAgentApiV1AgentsAgentIdPatchResponse>(
-    getUpdateAgentApiV1AgentsAgentIdPatchUrl(agentId),
+    getUpdateAgentApiV1AgentsAgentIdPatchUrl(agentId, params),
     {
       ...options,
       method: "PATCH",
@@ -578,14 +803,22 @@ export const getUpdateAgentApiV1AgentsAgentIdPatchMutationOptions = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof updateAgentApiV1AgentsAgentIdPatch>>,
     TError,
-    { agentId: string; data: AgentUpdate },
+    {
+      agentId: string;
+      data: AgentUpdate;
+      params?: UpdateAgentApiV1AgentsAgentIdPatchParams;
+    },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof updateAgentApiV1AgentsAgentIdPatch>>,
   TError,
-  { agentId: string; data: AgentUpdate },
+  {
+    agentId: string;
+    data: AgentUpdate;
+    params?: UpdateAgentApiV1AgentsAgentIdPatchParams;
+  },
   TContext
 > => {
   const mutationKey = ["updateAgentApiV1AgentsAgentIdPatch"];
@@ -599,11 +832,20 @@ export const getUpdateAgentApiV1AgentsAgentIdPatchMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof updateAgentApiV1AgentsAgentIdPatch>>,
-    { agentId: string; data: AgentUpdate }
+    {
+      agentId: string;
+      data: AgentUpdate;
+      params?: UpdateAgentApiV1AgentsAgentIdPatchParams;
+    }
   > = (props) => {
-    const { agentId, data } = props ?? {};
+    const { agentId, data, params } = props ?? {};
 
-    return updateAgentApiV1AgentsAgentIdPatch(agentId, data, requestOptions);
+    return updateAgentApiV1AgentsAgentIdPatch(
+      agentId,
+      data,
+      params,
+      requestOptions,
+    );
   };
 
   return { mutationFn, ...mutationOptions };
@@ -627,7 +869,11 @@ export const useUpdateAgentApiV1AgentsAgentIdPatch = <
     mutation?: UseMutationOptions<
       Awaited<ReturnType<typeof updateAgentApiV1AgentsAgentIdPatch>>,
       TError,
-      { agentId: string; data: AgentUpdate },
+      {
+        agentId: string;
+        data: AgentUpdate;
+        params?: UpdateAgentApiV1AgentsAgentIdPatchParams;
+      },
       TContext
     >;
     request?: SecondParameter<typeof customFetch>;
@@ -636,7 +882,11 @@ export const useUpdateAgentApiV1AgentsAgentIdPatch = <
 ): UseMutationResult<
   Awaited<ReturnType<typeof updateAgentApiV1AgentsAgentIdPatch>>,
   TError,
-  { agentId: string; data: AgentUpdate },
+  {
+    agentId: string;
+    data: AgentUpdate;
+    params?: UpdateAgentApiV1AgentsAgentIdPatchParams;
+  },
   TContext
 > => {
   return useMutation(
@@ -648,7 +898,7 @@ export const useUpdateAgentApiV1AgentsAgentIdPatch = <
  * @summary Delete Agent
  */
 export type deleteAgentApiV1AgentsAgentIdDeleteResponse200 = {
-  data: DeleteAgentApiV1AgentsAgentIdDelete200;
+  data: OkResponse;
   status: 200;
 };
 
@@ -1011,305 +1261,6 @@ export const useHeartbeatOrCreateAgentApiV1AgentsHeartbeatPost = <
 > => {
   return useMutation(
     getHeartbeatOrCreateAgentApiV1AgentsHeartbeatPostMutationOptions(options),
-    queryClient,
-  );
-};
-/**
- * @summary Confirm Provision Agent
- */
-export type confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponse200 =
-  {
-    data: ConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost200;
-    status: 200;
-  };
-
-export type confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponse422 =
-  {
-    data: HTTPValidationError;
-    status: 422;
-  };
-
-export type confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponseSuccess =
-  confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponse200 & {
-    headers: Headers;
-  };
-export type confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponseError =
-  confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponse422 & {
-    headers: Headers;
-  };
-
-export type confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponse =
-
-    | confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponseSuccess
-    | confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponseError;
-
-export const getConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostUrl =
-  (agentId: string) => {
-    return `/api/v1/agents/${agentId}/provision/confirm`;
-  };
-
-export const confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost =
-  async (
-    agentId: string,
-    agentProvisionConfirm: AgentProvisionConfirm,
-    options?: RequestInit,
-  ): Promise<confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponse> => {
-    return customFetch<confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostResponse>(
-      getConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostUrl(
-        agentId,
-      ),
-      {
-        ...options,
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...options?.headers },
-        body: JSON.stringify(agentProvisionConfirm),
-      },
-    );
-  };
-
-export const getConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostMutationOptions =
-  <TError = HTTPValidationError, TContext = unknown>(options?: {
-    mutation?: UseMutationOptions<
-      Awaited<
-        ReturnType<
-          typeof confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost
-        >
-      >,
-      TError,
-      { agentId: string; data: AgentProvisionConfirm },
-      TContext
-    >;
-    request?: SecondParameter<typeof customFetch>;
-  }): UseMutationOptions<
-    Awaited<
-      ReturnType<
-        typeof confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost
-      >
-    >,
-    TError,
-    { agentId: string; data: AgentProvisionConfirm },
-    TContext
-  > => {
-    const mutationKey = [
-      "confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost",
-    ];
-    const { mutation: mutationOptions, request: requestOptions } = options
-      ? options.mutation &&
-        "mutationKey" in options.mutation &&
-        options.mutation.mutationKey
-        ? options
-        : { ...options, mutation: { ...options.mutation, mutationKey } }
-      : { mutation: { mutationKey }, request: undefined };
-
-    const mutationFn: MutationFunction<
-      Awaited<
-        ReturnType<
-          typeof confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost
-        >
-      >,
-      { agentId: string; data: AgentProvisionConfirm }
-    > = (props) => {
-      const { agentId, data } = props ?? {};
-
-      return confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost(
-        agentId,
-        data,
-        requestOptions,
-      );
-    };
-
-    return { mutationFn, ...mutationOptions };
-  };
-
-export type ConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostMutationResult =
-  NonNullable<
-    Awaited<
-      ReturnType<
-        typeof confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost
-      >
-    >
-  >;
-export type ConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostMutationBody =
-  AgentProvisionConfirm;
-export type ConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostMutationError =
-  HTTPValidationError;
-
-/**
- * @summary Confirm Provision Agent
- */
-export const useConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost = <
-  TError = HTTPValidationError,
-  TContext = unknown,
->(
-  options?: {
-    mutation?: UseMutationOptions<
-      Awaited<
-        ReturnType<
-          typeof confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost
-        >
-      >,
-      TError,
-      { agentId: string; data: AgentProvisionConfirm },
-      TContext
-    >;
-    request?: SecondParameter<typeof customFetch>;
-  },
-  queryClient?: QueryClient,
-): UseMutationResult<
-  Awaited<
-    ReturnType<
-      typeof confirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPost
-    >
-  >,
-  TError,
-  { agentId: string; data: AgentProvisionConfirm },
-  TContext
-> => {
-  return useMutation(
-    getConfirmProvisionAgentApiV1AgentsAgentIdProvisionConfirmPostMutationOptions(
-      options,
-    ),
-    queryClient,
-  );
-};
-/**
- * @summary Confirm Delete Agent
- */
-export type confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponse200 = {
-  data: ConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost200;
-  status: 200;
-};
-
-export type confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponse422 = {
-  data: HTTPValidationError;
-  status: 422;
-};
-
-export type confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponseSuccess =
-  confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponse200 & {
-    headers: Headers;
-  };
-export type confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponseError =
-  confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponse422 & {
-    headers: Headers;
-  };
-
-export type confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponse =
-  | confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponseSuccess
-  | confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponseError;
-
-export const getConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostUrl = (
-  agentId: string,
-) => {
-  return `/api/v1/agents/${agentId}/delete/confirm`;
-};
-
-export const confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost = async (
-  agentId: string,
-  agentDeleteConfirm: AgentDeleteConfirm,
-  options?: RequestInit,
-): Promise<confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponse> => {
-  return customFetch<confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostResponse>(
-    getConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostUrl(agentId),
-    {
-      ...options,
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...options?.headers },
-      body: JSON.stringify(agentDeleteConfirm),
-    },
-  );
-};
-
-export const getConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostMutationOptions =
-  <TError = HTTPValidationError, TContext = unknown>(options?: {
-    mutation?: UseMutationOptions<
-      Awaited<
-        ReturnType<typeof confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost>
-      >,
-      TError,
-      { agentId: string; data: AgentDeleteConfirm },
-      TContext
-    >;
-    request?: SecondParameter<typeof customFetch>;
-  }): UseMutationOptions<
-    Awaited<
-      ReturnType<typeof confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost>
-    >,
-    TError,
-    { agentId: string; data: AgentDeleteConfirm },
-    TContext
-  > => {
-    const mutationKey = [
-      "confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost",
-    ];
-    const { mutation: mutationOptions, request: requestOptions } = options
-      ? options.mutation &&
-        "mutationKey" in options.mutation &&
-        options.mutation.mutationKey
-        ? options
-        : { ...options, mutation: { ...options.mutation, mutationKey } }
-      : { mutation: { mutationKey }, request: undefined };
-
-    const mutationFn: MutationFunction<
-      Awaited<
-        ReturnType<typeof confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost>
-      >,
-      { agentId: string; data: AgentDeleteConfirm }
-    > = (props) => {
-      const { agentId, data } = props ?? {};
-
-      return confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost(
-        agentId,
-        data,
-        requestOptions,
-      );
-    };
-
-    return { mutationFn, ...mutationOptions };
-  };
-
-export type ConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostMutationResult =
-  NonNullable<
-    Awaited<
-      ReturnType<typeof confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost>
-    >
-  >;
-export type ConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostMutationBody =
-  AgentDeleteConfirm;
-export type ConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostMutationError =
-  HTTPValidationError;
-
-/**
- * @summary Confirm Delete Agent
- */
-export const useConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost = <
-  TError = HTTPValidationError,
-  TContext = unknown,
->(
-  options?: {
-    mutation?: UseMutationOptions<
-      Awaited<
-        ReturnType<typeof confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost>
-      >,
-      TError,
-      { agentId: string; data: AgentDeleteConfirm },
-      TContext
-    >;
-    request?: SecondParameter<typeof customFetch>;
-  },
-  queryClient?: QueryClient,
-): UseMutationResult<
-  Awaited<
-    ReturnType<typeof confirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPost>
-  >,
-  TError,
-  { agentId: string; data: AgentDeleteConfirm },
-  TContext
-> => {
-  return useMutation(
-    getConfirmDeleteAgentApiV1AgentsAgentIdDeleteConfirmPostMutationOptions(
-      options,
-    ),
     queryClient,
   );
 };

@@ -24,8 +24,8 @@ import type {
   BoardCreate,
   BoardRead,
   BoardUpdate,
-  DeleteBoardApiV1BoardsBoardIdDelete200,
   HTTPValidationError,
+  OkResponse,
 } from ".././model";
 
 import { customFetch } from "../../mutator";
@@ -653,7 +653,7 @@ export const useUpdateBoardApiV1BoardsBoardIdPatch = <
  * @summary Delete Board
  */
 export type deleteBoardApiV1BoardsBoardIdDeleteResponse200 = {
-  data: DeleteBoardApiV1BoardsBoardIdDelete200;
+  data: OkResponse;
   status: 200;
 };
 

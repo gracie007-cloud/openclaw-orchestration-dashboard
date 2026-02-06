@@ -6,25 +6,19 @@ import { useRouter } from "next/navigation";
 import { SignInButton, SignedIn, SignedOut, useAuth, useUser } from "@clerk/nextjs";
 import { Globe, Info, RotateCcw, Save, User } from "lucide-react";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type getMeApiV1UsersMeGetResponse,
+  useGetMeApiV1UsersMeGet,
+  useUpdateMeApiV1UsersMePatch,
+} from "@/api/generated/users/users";
+import type { UserRead } from "@/api/generated/model";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import SearchableSelect from "@/components/ui/searchable-select";
-import { getApiBaseUrl } from "@/lib/api-base";
 
-const apiBase = getApiBaseUrl();
-
-type UserProfile = {
-  id: string;
-  name?: string | null;
-  preferred_name?: string | null;
-  pronouns?: string | null;
-  timezone?: string | null;
-  notes?: string | null;
-  context?: string | null;
-};
-
-const isCompleteProfile = (profile: UserProfile | null) => {
+const isCompleteProfile = (profile: UserRead | null | undefined) => {
   if (!profile) return false;
   const resolvedName = profile.preferred_name?.trim() || profile.name?.trim();
   return Boolean(resolvedName) && Boolean(profile.timezone?.trim());
@@ -32,17 +26,51 @@ const isCompleteProfile = (profile: UserProfile | null) => {
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
   const { user } = useUser();
 
   const [name, setName] = useState("");
   const [timezone, setTimezone] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const meQuery = useGetMeApiV1UsersMeGet<getMeApiV1UsersMeGetResponse, ApiError>(
+    {
+      query: {
+        enabled: Boolean(isSignedIn),
+        retry: false,
+        refetchOnMount: "always",
+      },
+    },
+  );
+
+  const updateMeMutation = useUpdateMeApiV1UsersMePatch<ApiError>({
+    mutation: {
+      onSuccess: () => {
+        router.replace("/dashboard");
+      },
+      onError: (err) => {
+        setError(err.message || "Something went wrong.");
+      },
+    },
+  });
+
+  const isLoading = meQuery.isLoading || updateMeMutation.isPending;
+  const loadError = meQuery.error?.message ?? null;
+  const errorMessage = error ?? loadError;
+  const profile = meQuery.data?.status === 200 ? meQuery.data.data : null;
+
+  const clerkFallbackName =
+    user?.fullName ?? user?.firstName ?? user?.username ?? "";
+  const resolvedName =
+    name.trim()
+      ? name
+      : profile?.preferred_name ?? profile?.name ?? clerkFallbackName ?? "";
+  const resolvedTimezone =
+    timezone.trim() ? timezone : profile?.timezone ?? "";
+
   const requiredMissing = useMemo(
-    () => [name, timezone].some((value) => !value.trim()),
-    [name, timezone]
+    () => [resolvedName, resolvedTimezone].some((value) => !value.trim()),
+    [resolvedName, resolvedTimezone],
   );
 
   const timezones = useMemo(() => {
@@ -73,47 +101,11 @@ export default function OnboardingPage() {
     [timezones],
   );
 
-  const loadProfile = async () => {
-    if (!isSignedIn) return;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/users/me`, {
-        headers: { Authorization: token ? `Bearer ${token}` : "" },
-      });
-      if (!response.ok) {
-        throw new Error("Unable to load profile.");
-      }
-      const data = (await response.json()) as UserProfile;
-      const fallbackName =
-        user?.fullName ?? user?.firstName ?? user?.username ?? "";
-      setName(data.preferred_name ?? data.name ?? fallbackName);
-      setTimezone(data.timezone ?? "");
-      if (isCompleteProfile(data)) {
-        router.replace("/dashboard");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
-    if (!name.trim() && user) {
-      const fallbackName =
-        user.fullName ?? user.firstName ?? user.username ?? "";
-      if (fallbackName) {
-        setName(fallbackName);
-      }
+    if (profile && isCompleteProfile(profile)) {
+      router.replace("/dashboard");
     }
-  }, [user, name]);
-
-  useEffect(() => {
-    loadProfile();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSignedIn]);
+  }, [profile, router]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -122,32 +114,17 @@ export default function OnboardingPage() {
       setError("Please complete the required fields.");
       return;
     }
-    setIsLoading(true);
     setError(null);
     try {
-      const token = await getToken();
-      const normalizedName = name.trim();
+      const normalizedName = resolvedName.trim();
       const payload = {
         name: normalizedName,
         preferred_name: normalizedName,
-        timezone: timezone.trim(),
+        timezone: resolvedTimezone.trim(),
       };
-      const response = await fetch(`${apiBase}/api/v1/users/me`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : "",
-        },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        throw new Error("Unable to update profile.");
-      }
-      router.replace("/dashboard");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
+      await updateMeMutation.mutateAsync({ data: payload });
+    } catch {
+      // handled by onError
     }
   };
 
@@ -197,7 +174,7 @@ export default function OnboardingPage() {
                       <span className="text-red-500">*</span>
                     </label>
                     <Input
-                      value={name}
+                      value={resolvedName}
                       onChange={(event) => setName(event.target.value)}
                       placeholder="Enter your name"
                       disabled={isLoading}
@@ -212,7 +189,7 @@ export default function OnboardingPage() {
                     </label>
                     <SearchableSelect
                       ariaLabel="Select timezone"
-                      value={timezone}
+                      value={resolvedTimezone}
                       onValueChange={setTimezone}
                       options={timezoneOptions}
                       placeholder="Select timezone"
@@ -233,9 +210,9 @@ export default function OnboardingPage() {
                   </p>
                 </div>
 
-                {error ? (
+                {errorMessage ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                    {error}
+                    {errorMessage}
                   </div>
                 ) : null}
 

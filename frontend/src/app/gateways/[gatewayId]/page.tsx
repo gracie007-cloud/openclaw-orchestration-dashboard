@@ -3,41 +3,27 @@
 import { useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 
-import { SignInButton, SignedIn, SignedOut } from "@clerk/nextjs";
+import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type gatewaysStatusApiV1GatewaysStatusGetResponse,
+  type getGatewayApiV1GatewaysGatewayIdGetResponse,
+  useGatewaysStatusApiV1GatewaysStatusGet,
+  useGetGatewayApiV1GatewaysGatewayIdGet,
+} from "@/api/generated/gateways/gateways";
+import {
+  type listAgentsApiV1AgentsGetResponse,
+  useListAgentsApiV1AgentsGet,
+} from "@/api/generated/agents/agents";
+import {
+  type listBoardsApiV1BoardsGetResponse,
+  useListBoardsApiV1BoardsGet,
+} from "@/api/generated/boards/boards";
+import type { AgentRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
-import { useAuthedQuery } from "@/lib/api-query";
-
-type Gateway = {
-  id: string;
-  name: string;
-  url: string;
-  token?: string | null;
-  main_session_key: string;
-  workspace_root: string;
-  skyll_enabled?: boolean;
-  created_at: string;
-  updated_at: string;
-};
-
-type Agent = {
-  id: string;
-  name: string;
-  status: string;
-  board_id?: string | null;
-  last_seen_at?: string | null;
-  updated_at: string;
-  is_board_lead?: boolean;
-};
-
-type GatewayStatus = {
-  connected: boolean;
-  gateway_url: string;
-  sessions_count?: number;
-  error?: string;
-};
 
 const formatTimestamp = (value?: string | null) => {
   if (!value) return "—";
@@ -60,46 +46,83 @@ const maskToken = (value?: string | null) => {
 export default function GatewayDetailPage() {
   const router = useRouter();
   const params = useParams();
+  const { isSignedIn } = useAuth();
   const gatewayIdParam = params?.gatewayId;
   const gatewayId = Array.isArray(gatewayIdParam)
     ? gatewayIdParam[0]
     : gatewayIdParam;
 
-  const gatewayQuery = useAuthedQuery<Gateway>(
-    ["gateway", gatewayId ?? "unknown"],
-    gatewayId ? `/api/v1/gateways/${gatewayId}` : null,
-    { refetchInterval: 30_000 }
-  );
+  const gatewayQuery = useGetGatewayApiV1GatewaysGatewayIdGet<
+    getGatewayApiV1GatewaysGatewayIdGetResponse,
+    ApiError
+  >(gatewayId ?? "", {
+    query: {
+      enabled: Boolean(isSignedIn && gatewayId),
+      refetchInterval: 30_000,
+    },
+  });
 
-  const gateway = gatewayQuery.data ?? null;
+  const gateway =
+    gatewayQuery.data?.status === 200 ? gatewayQuery.data.data : null;
 
-  const agentsQuery = useAuthedQuery<Agent[]>(
-    ["gateway-agents", gatewayId ?? "unknown"],
-    gatewayId ? `/api/v1/agents?gateway_id=${gatewayId}` : null,
-    { refetchInterval: 15_000 }
-  );
+  const boardsQuery = useListBoardsApiV1BoardsGet<
+    listBoardsApiV1BoardsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchInterval: 30_000,
+    },
+  });
 
-  const statusPath = gateway
-    ? (() => {
-        const params = new URLSearchParams({ gateway_url: gateway.url });
-        if (gateway.token) {
-          params.set("gateway_token", gateway.token);
-        }
-        if (gateway.main_session_key) {
-          params.set("gateway_main_session_key", gateway.main_session_key);
-        }
-        return `/api/v1/gateways/status?${params.toString()}`;
-      })()
-    : null;
+  const agentsQuery = useListAgentsApiV1AgentsGet<
+    listAgentsApiV1AgentsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchInterval: 15_000,
+    },
+  });
 
-  const statusQuery = useAuthedQuery<GatewayStatus>(
-    ["gateway-status", gatewayId ?? "unknown"],
-    statusPath,
-    { refetchInterval: 15_000, enabled: Boolean(statusPath) }
-  );
+  const statusParams = gateway
+    ? {
+        gateway_url: gateway.url,
+        gateway_token: gateway.token ?? undefined,
+        gateway_main_session_key: gateway.main_session_key ?? undefined,
+      }
+    : undefined;
 
-  const agents = agentsQuery.data ?? [];
-  const isConnected = statusQuery.data?.connected ?? false;
+  const statusQuery = useGatewaysStatusApiV1GatewaysStatusGet<
+    gatewaysStatusApiV1GatewaysStatusGetResponse,
+    ApiError
+  >(statusParams, {
+    query: {
+      enabled: Boolean(isSignedIn && statusParams),
+      refetchInterval: 15_000,
+    },
+  });
+
+  const agents = useMemo(() => {
+    const allAgents = agentsQuery.data?.data ?? [];
+    const boards = boardsQuery.data?.status === 200 ? boardsQuery.data.data : [];
+    if (!gatewayId) {
+      return allAgents;
+    }
+    const boardIds = new Set(
+      boards.filter((board) => board.gateway_id === gatewayId).map((board) => board.id),
+    );
+    if (boardIds.size === 0) {
+      return [];
+    }
+    return allAgents.filter(
+      (agent): agent is AgentRead => Boolean(agent.board_id && boardIds.has(agent.board_id)),
+    );
+  }, [agentsQuery.data, boardsQuery.data, gatewayId]);
+
+  const status =
+    statusQuery.data?.status === 200 ? statusQuery.data.data : null;
+  const isConnected = status?.connected ?? false;
 
   const title = useMemo(
     () => (gateway?.name ? gateway.name : "Gateway"),

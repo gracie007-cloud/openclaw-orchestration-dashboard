@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.activity_events import ActivityEvent
 
 
 def record_activity(
-    session: Session,
+    session: AsyncSession,
     *,
     event_type: str,
     message: str,

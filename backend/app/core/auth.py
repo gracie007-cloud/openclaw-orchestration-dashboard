@@ -9,9 +9,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer
 from fastapi_clerk_auth import HTTPAuthorizationCredentials as ClerkCredentials
 from pydantic import BaseModel, ValidationError
-from sqlmodel import Session, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
+from app.db import crud
 from app.db.session import get_session
 from app.models.users import User
 
@@ -44,7 +45,9 @@ def _resolve_clerk_auth(
     request: Request, fallback: ClerkCredentials | None
 ) -> ClerkCredentials | None:
     auth_data = getattr(request.state, "clerk_auth", None)
-    return auth_data or fallback
+    if isinstance(auth_data, ClerkCredentials):
+        return auth_data
+    return fallback
 
 
 def _parse_subject(auth_data: ClerkCredentials | None) -> str | None:
@@ -57,7 +60,7 @@ def _parse_subject(auth_data: ClerkCredentials | None) -> str | None:
 async def get_auth_context(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
 ) -> AuthContext:
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
@@ -79,17 +82,21 @@ async def get_auth_context(
     if not clerk_user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    user = session.exec(select(User).where(User.clerk_user_id == clerk_user_id)).first()
-    if user is None:
-        claims = auth_data.decoded if auth_data and auth_data.decoded else {}
-        user = User(
-            clerk_user_id=clerk_user_id,
-            email=claims.get("email"),
-            name=claims.get("name"),
-        )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
+    claims: dict[str, object] = {}
+    if auth_data and auth_data.decoded:
+        claims = auth_data.decoded
+    email_obj = claims.get("email")
+    name_obj = claims.get("name")
+    defaults: dict[str, object | None] = {
+        "email": email_obj if isinstance(email_obj, str) else None,
+        "name": name_obj if isinstance(name_obj, str) else None,
+    }
+    user, _created = await crud.get_or_create(
+        session,
+        User,
+        clerk_user_id=clerk_user_id,
+        defaults=defaults,
+    )
 
     return AuthContext(
         actor_type="user",
@@ -100,7 +107,7 @@ async def get_auth_context(
 async def get_auth_context_optional(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
 ) -> AuthContext | None:
     if request.headers.get("X-Agent-Token"):
         return None
@@ -124,17 +131,21 @@ async def get_auth_context_optional(
     if not clerk_user_id:
         return None
 
-    user = session.exec(select(User).where(User.clerk_user_id == clerk_user_id)).first()
-    if user is None:
-        claims = auth_data.decoded if auth_data and auth_data.decoded else {}
-        user = User(
-            clerk_user_id=clerk_user_id,
-            email=claims.get("email"),
-            name=claims.get("name"),
-        )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
+    claims: dict[str, object] = {}
+    if auth_data and auth_data.decoded:
+        claims = auth_data.decoded
+    email_obj = claims.get("email")
+    name_obj = claims.get("name")
+    defaults: dict[str, object | None] = {
+        "email": email_obj if isinstance(email_obj, str) else None,
+        "name": name_obj if isinstance(name_obj, str) else None,
+    }
+    user, _created = await crud.get_or_create(
+        session,
+        User,
+        clerk_user_id=clerk_user_id,
+        defaults=defaults,
+    )
 
     return AuthContext(
         actor_type="user",

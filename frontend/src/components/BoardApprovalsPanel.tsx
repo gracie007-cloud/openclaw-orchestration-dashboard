@@ -1,12 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { useAuth } from "@clerk/nextjs";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { Clock } from "lucide-react";
 import { Cell, Pie, PieChart } from "recharts";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type listApprovalsApiV1BoardsBoardIdApprovalsGetResponse,
+  getListApprovalsApiV1BoardsBoardIdApprovalsGetQueryKey,
+  useListApprovalsApiV1BoardsBoardIdApprovalsGet,
+  useUpdateApprovalApiV1BoardsBoardIdApprovalsApprovalIdPatch,
+} from "@/api/generated/approvals/approvals";
+import type { ApprovalRead } from "@/api/generated/model";
 import {
   ChartContainer,
   ChartTooltip,
@@ -14,25 +23,17 @@ import {
   type ChartConfig,
 } from "@/components/charts/chart";
 import { Button } from "@/components/ui/button";
-import { getApiBaseUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 
-const apiBase = getApiBaseUrl();
-
-type Approval = {
-  id: string;
-  action_type: string;
-  payload?: Record<string, unknown> | null;
-  confidence: number;
-  rubric_scores?: Record<string, number> | null;
-  status: string;
-  created_at: string;
-  resolved_at?: string | null;
-};
+type Approval = ApprovalRead & { status: string };
+const normalizeApproval = (approval: ApprovalRead): Approval => ({
+  ...approval,
+  status: approval.status ?? "pending",
+});
 
 type BoardApprovalsPanelProps = {
   boardId: string;
-  approvals?: Approval[];
+  approvals?: ApprovalRead[];
   isLoading?: boolean;
   error?: string | null;
   onDecision?: (approvalId: string, status: "approved" | "rejected") => void;
@@ -192,54 +193,59 @@ export function BoardApprovalsPanel({
   onDecision,
   scrollable = false,
 }: BoardApprovalsPanelProps) {
-  const { getToken, isSignedIn } = useAuth();
-  const [internalApprovals, setInternalApprovals] = useState<Approval[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const { isSignedIn } = useAuth();
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const lastDecisionRef = useRef<string | null>(null);
   const usingExternal = Array.isArray(externalApprovals);
-  const approvals = useMemo(
-    () => (usingExternal ? externalApprovals ?? [] : internalApprovals),
-    [externalApprovals, internalApprovals, usingExternal],
+  const approvalsKey = useMemo(
+    () => getListApprovalsApiV1BoardsBoardIdApprovalsGetQueryKey(boardId),
+    [boardId],
   );
-  const loadingState = usingExternal ? externalLoading ?? false : isLoading;
-  const errorState = usingExternal ? externalError ?? null : error;
 
-  const loadApprovals = useCallback(async () => {
-    if (usingExternal) return;
-    if (!isSignedIn || !boardId) return;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const token = await getToken();
-      const res = await fetch(`${apiBase}/api/v1/boards/${boardId}/approvals`, {
-        headers: {
-          Authorization: token ? `Bearer ${token}` : "",
-        },
-      });
-      if (!res.ok) throw new Error("Unable to load approvals.");
-      const data = (await res.json()) as Approval[];
-      setInternalApprovals(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load approvals.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [boardId, getToken, isSignedIn, usingExternal]);
+  const approvalsQuery = useListApprovalsApiV1BoardsBoardIdApprovalsGet<
+    listApprovalsApiV1BoardsBoardIdApprovalsGetResponse,
+    ApiError
+  >(boardId, undefined, {
+    query: {
+      enabled: Boolean(!usingExternal && isSignedIn && boardId),
+      refetchInterval: 15_000,
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
 
-  useEffect(() => {
-    if (usingExternal) return;
-    loadApprovals();
-    if (!isSignedIn || !boardId) return;
-    const interval = setInterval(loadApprovals, 15000);
-    return () => clearInterval(interval);
-  }, [boardId, isSignedIn, loadApprovals, usingExternal]);
+  const updateApprovalMutation =
+    useUpdateApprovalApiV1BoardsBoardIdApprovalsApprovalIdPatch<ApiError>();
+
+  const approvals = useMemo(() => {
+    const raw = usingExternal
+      ? externalApprovals ?? []
+      : approvalsQuery.data?.status === 200
+        ? approvalsQuery.data.data
+        : [];
+    return raw.map(normalizeApproval);
+  }, [approvalsQuery.data, externalApprovals, usingExternal]);
+
+  const loadingState = usingExternal
+    ? externalLoading ?? false
+    : approvalsQuery.isLoading;
+  const errorState = usingExternal
+    ? externalError ?? null
+    : error ?? approvalsQuery.error?.message ?? null;
 
   const handleDecision = useCallback(
-    async (approvalId: string, status: "approved" | "rejected") => {
-      lastDecisionRef.current = approvalId;
+    (approvalId: string, status: "approved" | "rejected") => {
+      const pendingNext = [...approvals]
+        .filter((item) => item.id !== approvalId)
+        .filter((item) => item.status === "pending")
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+        ?.id;
+      if (pendingNext) {
+        setSelectedId(pendingNext);
+      }
+
       if (onDecision) {
         onDecision(approvalId, status);
         return;
@@ -248,33 +254,45 @@ export function BoardApprovalsPanel({
       if (!isSignedIn || !boardId) return;
       setUpdatingId(approvalId);
       setError(null);
-      try {
-        const token = await getToken();
-        const res = await fetch(
-          `${apiBase}/api/v1/boards/${boardId}/approvals/${approvalId}`,
-          {
-            method: "PATCH",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: token ? `Bearer ${token}` : "",
-            },
-            body: JSON.stringify({ status }),
-          }
-        );
-        if (!res.ok) throw new Error("Unable to update approval.");
-        const updated = (await res.json()) as Approval;
-        setInternalApprovals((prev) =>
-          prev.map((item) => (item.id === approvalId ? updated : item))
-        );
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Unable to update approval."
-        );
-      } finally {
-        setUpdatingId(null);
-      }
+
+      updateApprovalMutation.mutate(
+        { boardId, approvalId, data: { status } },
+        {
+          onSuccess: (result) => {
+            if (result.status !== 200) return;
+            queryClient.setQueryData<listApprovalsApiV1BoardsBoardIdApprovalsGetResponse>(
+              approvalsKey,
+              (previous) => {
+                if (!previous || previous.status !== 200) return previous;
+                return {
+                  ...previous,
+                  data: previous.data.map((item) =>
+                    item.id === approvalId ? result.data : item,
+                  ),
+                };
+              },
+            );
+          },
+          onError: (err) => {
+            setError(err.message || "Unable to update approval.");
+          },
+          onSettled: () => {
+            setUpdatingId(null);
+            queryClient.invalidateQueries({ queryKey: approvalsKey });
+          },
+        },
+      );
     },
-    [boardId, getToken, isSignedIn, onDecision, usingExternal]
+    [
+      approvals,
+      approvalsKey,
+      boardId,
+      isSignedIn,
+      onDecision,
+      queryClient,
+      updateApprovalMutation,
+      usingExternal,
+    ],
   );
 
   const sortedApprovals = useMemo(() => {
@@ -298,32 +316,20 @@ export function BoardApprovalsPanel({
     [sortedApprovals.pending, sortedApprovals.resolved]
   );
 
-  useEffect(() => {
-    if (orderedApprovals.length === 0) {
-      setSelectedId(null);
-      return;
+  const effectiveSelectedId = useMemo(() => {
+    if (orderedApprovals.length === 0) return null;
+    if (selectedId && orderedApprovals.some((item) => item.id === selectedId)) {
+      return selectedId;
     }
-    if (!selectedId || !orderedApprovals.some((item) => item.id === selectedId)) {
-      setSelectedId(orderedApprovals[0].id);
-    }
+    return orderedApprovals[0].id;
   }, [orderedApprovals, selectedId]);
 
   const selectedApproval = useMemo(() => {
-    if (!selectedId) return null;
-    return orderedApprovals.find((item) => item.id === selectedId) ?? null;
-  }, [orderedApprovals, selectedId]);
-
-  useEffect(() => {
-    if (!lastDecisionRef.current) return;
-    const resolvedId = lastDecisionRef.current;
-    const pendingNext = sortedApprovals.pending.find(
-      (item) => item.id !== resolvedId,
+    if (!effectiveSelectedId) return null;
+    return (
+      orderedApprovals.find((item) => item.id === effectiveSelectedId) ?? null
     );
-    if (pendingNext) {
-      setSelectedId(pendingNext.id);
-    }
-    lastDecisionRef.current = null;
-  }, [sortedApprovals.pending]);
+  }, [effectiveSelectedId, orderedApprovals]);
 
   const pendingCount = sortedApprovals.pending.length;
   const resolvedCount = sortedApprovals.resolved.length;
@@ -369,7 +375,7 @@ export function BoardApprovalsPanel({
             >
               {orderedApprovals.map((approval) => {
                 const summary = approvalSummary(approval);
-                const isSelected = selectedId === approval.id;
+                const isSelected = effectiveSelectedId === approval.id;
                 const isPending = approval.status === "pending";
                 const titleRow = summary.rows.find(
                   (row) => row.label.toLowerCase() === "title"

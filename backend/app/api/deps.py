@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import Depends, HTTPException, status
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.agent_auth import AgentAuthContext, get_agent_auth_context_optional
 from app.core.auth import AuthContext, get_auth_context, get_auth_context_optional
@@ -40,22 +40,22 @@ def require_admin_or_agent(
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
-def get_board_or_404(
+async def get_board_or_404(
     board_id: str,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
 ) -> Board:
-    board = session.get(Board, board_id)
+    board = await session.get(Board, board_id)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return board
 
 
-def get_task_or_404(
+async def get_task_or_404(
     task_id: str,
     board: Board = Depends(get_board_or_404),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
 ) -> Task:
-    task = session.get(Task, task_id)
+    task = await session.get(Task, task_id)
     if task is None or task.board_id != board.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return task

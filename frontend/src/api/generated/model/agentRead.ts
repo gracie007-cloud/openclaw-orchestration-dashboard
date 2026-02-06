@@ -5,13 +5,20 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AgentReadHeartbeatConfig } from "./agentReadHeartbeatConfig";
+import type { AgentReadIdentityProfile } from "./agentReadIdentityProfile";
 
 export interface AgentRead {
   board_id?: string | null;
+  /** @minLength 1 */
   name: string;
   status?: string;
   heartbeat_config?: AgentReadHeartbeatConfig;
+  identity_profile?: AgentReadIdentityProfile;
+  identity_template?: string | null;
+  soul_template?: string | null;
   id: string;
+  is_board_lead?: boolean;
+  is_gateway_main?: boolean;
   openclaw_session_id?: string | null;
   last_seen_at: string | null;
   created_at: string;

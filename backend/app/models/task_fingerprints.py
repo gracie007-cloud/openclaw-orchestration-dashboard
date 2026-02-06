@@ -5,6 +5,8 @@ from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
 
+from app.core.time import utcnow
+
 
 class TaskFingerprint(SQLModel, table=True):
     __tablename__ = "task_fingerprints"
@@ -13,4 +15,4 @@ class TaskFingerprint(SQLModel, table=True):
     board_id: UUID = Field(foreign_key="boards.id", index=True)
     fingerprint_hash: str = Field(index=True)
     task_id: UUID = Field(foreign_key="tasks.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)

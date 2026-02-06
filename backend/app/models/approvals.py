@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
+from app.core.time import utcnow
+
 
 class Approval(SQLModel, table=True):
     __tablename__ = "approvals"
@@ -18,5 +20,5 @@ class Approval(SQLModel, table=True):
     confidence: int
     rubric_scores: dict[str, int] | None = Field(default=None, sa_column=Column(JSON))
     status: str = Field(default="pending", index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
     resolved_at: datetime | None = None

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { SignInButton, SignedIn, SignedOut } from "@clerk/nextjs";
+import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 import {
   type ColumnDef,
   type SortingState,
@@ -27,25 +27,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { apiRequest, useAuthedMutation, useAuthedQuery } from "@/lib/api-query";
 
-type Agent = {
-  id: string;
-  name: string;
-  status: string;
-  openclaw_session_id?: string | null;
-  last_seen_at: string;
-  created_at: string;
-  updated_at: string;
-  board_id?: string | null;
-  is_board_lead?: boolean;
-};
-
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-};
+import { ApiError } from "@/api/mutator";
+import {
+  type listAgentsApiV1AgentsGetResponse,
+  getListAgentsApiV1AgentsGetQueryKey,
+  useDeleteAgentApiV1AgentsAgentIdDelete,
+  useListAgentsApiV1AgentsGet,
+} from "@/api/generated/agents/agents";
+import {
+  type listBoardsApiV1BoardsGetResponse,
+  getListBoardsApiV1BoardsGetQueryKey,
+  useListBoardsApiV1BoardsGet,
+} from "@/api/generated/boards/boards";
+import type { AgentRead, BoardRead } from "@/api/generated/model";
 
 const parseTimestamp = (value?: string | null) => {
   if (!value) return null;
@@ -87,6 +82,7 @@ const truncate = (value?: string | null, max = 18) => {
 };
 
 export default function AgentsPage() {
+  const { isSignedIn } = useAuth();
   const queryClient = useQueryClient();
   const router = useRouter();
 
@@ -94,47 +90,72 @@ export default function AgentsPage() {
     { id: "name", desc: false },
   ]);
 
-  const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentRead | null>(null);
 
-  const boardsQuery = useAuthedQuery<Board[]>(["boards"], "/api/v1/boards", {
-    refetchInterval: 30_000,
-    refetchOnMount: "always",
+  const boardsKey = getListBoardsApiV1BoardsGetQueryKey();
+  const agentsKey = getListAgentsApiV1AgentsGetQueryKey();
+
+  const boardsQuery = useListBoardsApiV1BoardsGet<
+    listBoardsApiV1BoardsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchInterval: 30_000,
+      refetchOnMount: "always",
+    },
   });
-  const agentsQuery = useAuthedQuery<Agent[]>(["agents"], "/api/v1/agents", {
-    refetchInterval: 15_000,
-    refetchOnMount: "always",
+
+  const agentsQuery = useListAgentsApiV1AgentsGet<
+    listAgentsApiV1AgentsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchInterval: 15_000,
+      refetchOnMount: "always",
+    },
   });
 
-  const boards = useMemo(() => boardsQuery.data ?? [], [boardsQuery.data]);
-  const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data]);
+  const boards = useMemo(
+    () => (boardsQuery.data?.status === 200 ? boardsQuery.data.data : []),
+    [boardsQuery.data]
+  );
+  const agents = useMemo(() => agentsQuery.data?.data ?? [], [agentsQuery.data]);
 
-  const deleteMutation = useAuthedMutation<void, Agent, { previous?: Agent[] }>(
-    async (agent, token) =>
-      apiRequest(`/api/v1/agents/${agent.id}`, {
-        method: "DELETE",
-        token,
-      }),
+  const deleteMutation = useDeleteAgentApiV1AgentsAgentIdDelete<
+    ApiError,
+    { previous?: listAgentsApiV1AgentsGetResponse }
+  >(
     {
-      onMutate: async (agent) => {
-        await queryClient.cancelQueries({ queryKey: ["agents"] });
-        const previous = queryClient.getQueryData<Agent[]>(["agents"]);
-        queryClient.setQueryData<Agent[]>(["agents"], (old = []) =>
-          old.filter((item) => item.id !== agent.id)
-        );
-        return { previous };
+      mutation: {
+        onMutate: async ({ agentId }) => {
+          await queryClient.cancelQueries({ queryKey: agentsKey });
+          const previous =
+            queryClient.getQueryData<listAgentsApiV1AgentsGetResponse>(agentsKey);
+          if (previous) {
+            queryClient.setQueryData<listAgentsApiV1AgentsGetResponse>(agentsKey, {
+              ...previous,
+              data: previous.data.filter((agent) => agent.id !== agentId),
+            });
+          }
+          return { previous };
+        },
+        onError: (_error, _agent, context) => {
+          if (context?.previous) {
+            queryClient.setQueryData(agentsKey, context.previous);
+          }
+        },
+        onSuccess: () => {
+          setDeleteTarget(null);
+        },
+        onSettled: () => {
+          queryClient.invalidateQueries({ queryKey: agentsKey });
+          queryClient.invalidateQueries({ queryKey: boardsKey });
+        },
       },
-      onError: (_error, _agent, context) => {
-        if (context?.previous) {
-          queryClient.setQueryData(["agents"], context.previous);
-        }
-      },
-      onSuccess: () => {
-        setDeleteTarget(null);
-      },
-      onSettled: () => {
-        queryClient.invalidateQueries({ queryKey: ["agents"] });
-      },
-    }
+    },
+    queryClient
   );
 
   const sortedAgents = useMemo(() => [...agents], [agents]);
@@ -142,12 +163,12 @@ export default function AgentsPage() {
 
   const handleDelete = () => {
     if (!deleteTarget) return;
-    deleteMutation.mutate(deleteTarget);
+    deleteMutation.mutate({ agentId: deleteTarget.id });
   };
 
-  const columns = useMemo<ColumnDef<Agent>[]>(
+  const columns = useMemo<ColumnDef<AgentRead>[]>(
     () => {
-      const resolveBoardName = (agent: Agent) =>
+      const resolveBoardName = (agent: AgentRead) =>
         boards.find((board) => board.id === agent.board_id)?.name ?? "—";
 
       return [
@@ -166,7 +187,9 @@ export default function AgentsPage() {
         {
           accessorKey: "status",
           header: "Status",
-          cell: ({ row }) => <StatusPill status={row.original.status} />,
+          cell: ({ row }) => (
+            <StatusPill status={row.original.status ?? "unknown"} />
+          ),
         },
         {
           accessorKey: "openclaw_session_id",

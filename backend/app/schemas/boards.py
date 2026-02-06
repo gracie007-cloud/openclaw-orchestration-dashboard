@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Self
 from uuid import UUID
 
 from pydantic import model_validator
@@ -20,8 +21,10 @@ class BoardBase(SQLModel):
 
 
 class BoardCreate(BoardBase):
+    gateway_id: UUID
+
     @model_validator(mode="after")
-    def validate_goal_fields(self):
+    def validate_goal_fields(self) -> Self:
         if self.board_type == "goal" and self.goal_confirmed:
             if not self.objective or not self.success_metrics:
                 raise ValueError("Confirmed goal boards require objective and success_metrics")
@@ -38,6 +41,13 @@ class BoardUpdate(SQLModel):
     target_date: datetime | None = None
     goal_confirmed: bool | None = None
     goal_source: str | None = None
+
+    @model_validator(mode="after")
+    def validate_gateway_id(self) -> Self:
+        # Treat explicit null like "unset" is invalid for patch updates.
+        if "gateway_id" in self.model_fields_set and self.gateway_id is None:
+            raise ValueError("gateway_id is required")
+        return self
 
 
 class BoardRead(BoardBase):

@@ -1,51 +1,42 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { BarChart3, Bot, LayoutGrid, Network } from "lucide-react";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type healthzHealthzGetResponse,
+  useHealthzHealthzGet,
+} from "@/api/generated/default/default";
 import { cn } from "@/lib/utils";
-import { getApiBaseUrl } from "@/lib/api-base";
 
 export function DashboardSidebar() {
   const pathname = usePathname();
-  const [systemStatus, setSystemStatus] = useState<
-    "unknown" | "operational" | "degraded"
-  >("unknown");
-  const [statusLabel, setStatusLabel] = useState("System status unavailable");
+  const healthQuery = useHealthzHealthzGet<healthzHealthzGetResponse, ApiError>({
+    query: {
+      refetchInterval: 30_000,
+      refetchOnMount: "always",
+      retry: false,
+    },
+    request: { cache: "no-store" },
+  });
 
-  useEffect(() => {
-    let isMounted = true;
-    const apiBase = getApiBaseUrl();
-    const checkHealth = async () => {
-      try {
-        const response = await fetch(`${apiBase}/healthz`, { cache: "no-store" });
-        if (!response.ok) {
-          throw new Error("Health check failed");
-        }
-        const data = (await response.json()) as { ok?: boolean };
-        if (!isMounted) return;
-        if (data?.ok) {
-          setSystemStatus("operational");
-          setStatusLabel("All systems operational");
-        } else {
-          setSystemStatus("degraded");
-          setStatusLabel("System degraded");
-        }
-      } catch {
-        if (!isMounted) return;
-        setSystemStatus("degraded");
-        setStatusLabel("System degraded");
-      }
-    };
-    checkHealth();
-    const interval = setInterval(checkHealth, 30000);
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
-  }, []);
+  const okValue = healthQuery.data?.data?.ok;
+  const systemStatus: "unknown" | "operational" | "degraded" =
+    okValue === true
+      ? "operational"
+      : okValue === false
+        ? "degraded"
+        : healthQuery.isError
+          ? "degraded"
+          : "unknown";
+  const statusLabel =
+    systemStatus === "operational"
+      ? "All systems operational"
+      : systemStatus === "unknown"
+        ? "System status unavailable"
+        : "System degraded";
 
   return (
     <aside className="flex h-full w-64 flex-col border-r border-slate-200 bg-white">

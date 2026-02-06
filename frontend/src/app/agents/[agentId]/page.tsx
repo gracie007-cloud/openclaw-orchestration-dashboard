@@ -1,11 +1,26 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type getAgentApiV1AgentsAgentIdGetResponse,
+  useDeleteAgentApiV1AgentsAgentIdDelete,
+  useGetAgentApiV1AgentsAgentIdGet,
+} from "@/api/generated/agents/agents";
+import {
+  type listActivityApiV1ActivityGetResponse,
+  useListActivityApiV1ActivityGet,
+} from "@/api/generated/activity/activity";
+import {
+  type listBoardsApiV1BoardsGetResponse,
+  useListBoardsApiV1BoardsGet,
+} from "@/api/generated/boards/boards";
+import type { ActivityEventRead, AgentRead, BoardRead } from "@/api/generated/model";
 import { StatusPill } from "@/components/atoms/StatusPill";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
@@ -18,36 +33,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { getApiBaseUrl } from "@/lib/api-base";
-
-const apiBase = getApiBaseUrl();
-
-type Agent = {
-  id: string;
-  name: string;
-  status: string;
-  openclaw_session_id?: string | null;
-  last_seen_at: string;
-  created_at: string;
-  updated_at: string;
-  board_id?: string | null;
-  is_board_lead?: boolean;
-  is_gateway_main?: boolean;
-};
-
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-};
-
-type ActivityEvent = {
-  id: string;
-  event_type: string;
-  message?: string | null;
-  agent_id?: string | null;
-  created_at: string;
-};
 
 const parseTimestamp = (value?: string | null) => {
   if (!value) return null;
@@ -83,95 +68,96 @@ const formatRelative = (value?: string | null) => {
 };
 
 export default function AgentDetailPage() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
   const router = useRouter();
   const params = useParams();
   const agentIdParam = params?.agentId;
   const agentId = Array.isArray(agentIdParam) ? agentIdParam[0] : agentIdParam;
 
-  const [agent, setAgent] = useState<Agent | null>(null);
-  const [events, setEvents] = useState<ActivityEvent[]>([]);
-  const [boards, setBoards] = useState<Board[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const agentQuery = useGetAgentApiV1AgentsAgentIdGet<
+    getAgentApiV1AgentsAgentIdGetResponse,
+    ApiError
+  >(agentId ?? "", {
+    query: {
+      enabled: Boolean(isSignedIn && agentId),
+      refetchInterval: 30_000,
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const activityQuery = useListActivityApiV1ActivityGet<
+    listActivityApiV1ActivityGetResponse,
+    ApiError
+  >(
+    { limit: 200 },
+    {
+      query: {
+        enabled: Boolean(isSignedIn),
+        refetchInterval: 30_000,
+        retry: false,
+      },
+    },
+  );
+
+  const boardsQuery = useListBoardsApiV1BoardsGet<
+    listBoardsApiV1BoardsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchInterval: 60_000,
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const agent: AgentRead | null =
+    agentQuery.data?.status === 200 ? agentQuery.data.data : null;
+  const events: ActivityEventRead[] =
+    activityQuery.data?.status === 200 ? activityQuery.data.data : [];
+  const boards: BoardRead[] =
+    boardsQuery.data?.status === 200 ? boardsQuery.data.data : [];
 
   const agentEvents = useMemo(() => {
     if (!agent) return [];
     return events.filter((event) => event.agent_id === agent.id);
   }, [events, agent]);
-  const linkedBoard = useMemo(() => {
-    if (!agent?.board_id || agent?.is_gateway_main) return null;
-    return boards.find((board) => board.id === agent.board_id) ?? null;
-  }, [boards, agent?.board_id, agent?.is_gateway_main]);
+  const linkedBoard =
+    !agent?.board_id || agent?.is_gateway_main
+      ? null
+      : boards.find((board) => board.id === agent.board_id) ?? null;
 
+  const deleteMutation = useDeleteAgentApiV1AgentsAgentIdDelete<ApiError>({
+    mutation: {
+      onSuccess: () => {
+        setDeleteOpen(false);
+        router.push("/agents");
+      },
+      onError: (err) => {
+        setDeleteError(err.message || "Something went wrong.");
+      },
+    },
+  });
 
-  const loadAgent = async () => {
-    if (!isSignedIn || !agentId) return;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const token = await getToken();
-      const [agentResponse, activityResponse, boardsResponse] = await Promise.all([
-        fetch(`${apiBase}/api/v1/agents/${agentId}`, {
-          headers: { Authorization: token ? `Bearer ${token}` : "" },
-        }),
-        fetch(`${apiBase}/api/v1/activity?limit=200`, {
-          headers: { Authorization: token ? `Bearer ${token}` : "" },
-        }),
-        fetch(`${apiBase}/api/v1/boards`, {
-          headers: { Authorization: token ? `Bearer ${token}` : "" },
-        }),
-      ]);
-      if (!agentResponse.ok) {
-        throw new Error("Unable to load agent.");
-      }
-      if (!activityResponse.ok) {
-        throw new Error("Unable to load activity.");
-      }
-      if (!boardsResponse.ok) {
-        throw new Error("Unable to load boards.");
-      }
-      const agentData = (await agentResponse.json()) as Agent;
-      const eventsData = (await activityResponse.json()) as ActivityEvent[];
-      const boardsData = (await boardsResponse.json()) as Board[];
-      setAgent(agentData);
-      setEvents(eventsData);
-      setBoards(boardsData);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const isLoading =
+    agentQuery.isLoading || activityQuery.isLoading || boardsQuery.isLoading;
+  const error =
+    agentQuery.error?.message ??
+    activityQuery.error?.message ??
+    boardsQuery.error?.message ??
+    null;
 
-  useEffect(() => {
-    loadAgent();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSignedIn, agentId]);
+  const isDeleting = deleteMutation.isPending;
+  const agentStatus = agent?.status ?? "unknown";
 
-  const handleDelete = async () => {
-    if (!agent || !isSignedIn) return;
-    setIsDeleting(true);
+  const handleDelete = () => {
+    if (!agentId || !isSignedIn) return;
     setDeleteError(null);
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/agents/${agent.id}`, {
-        method: "DELETE",
-        headers: { Authorization: token ? `Bearer ${token}` : "" },
-      });
-      if (!response.ok) {
-        throw new Error("Unable to delete agent.");
-      }
-      router.push("/agents");
-    } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsDeleting(false);
-    }
+    deleteMutation.mutate({ agentId });
   };
 
   return (
@@ -247,7 +233,7 @@ export default function AgentDetailPage() {
                         {agent.name}
                       </p>
                     </div>
-                    <StatusPill status={agent.status} />
+                    <StatusPill status={agentStatus} />
                   </div>
                   <div className="mt-4 grid gap-4 md:grid-cols-2">
                     <div>
@@ -316,7 +302,7 @@ export default function AgentDetailPage() {
                     <p className="text-xs font-semibold uppercase tracking-[0.2em] text-quiet">
                       Health
                     </p>
-                    <StatusPill status={agent.status} />
+                    <StatusPill status={agentStatus} />
                   </div>
                   <div className="mt-4 grid gap-3 text-sm text-muted">
                     <div className="flex items-center justify-between">
@@ -329,7 +315,7 @@ export default function AgentDetailPage() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span>Status</span>
-                      <span className="text-strong">{agent.status}</span>
+                      <span className="text-strong">{agentStatus}</span>
                     </div>
                   </div>
                 </div>

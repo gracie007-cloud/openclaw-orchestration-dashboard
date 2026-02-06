@@ -1,18 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 import { CheckCircle2, RefreshCcw, XCircle } from "lucide-react";
 
+import { ApiError } from "@/api/mutator";
+import {
+  gatewaysStatusApiV1GatewaysStatusGet,
+  useCreateGatewayApiV1GatewaysPost,
+} from "@/api/generated/gateways/gateways";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { getApiBaseUrl } from "@/lib/api-base";
-
-const apiBase = getApiBaseUrl();
 
 const DEFAULT_MAIN_SESSION_KEY = "agent:main:main";
 const DEFAULT_WORKSPACE_ROOT = "~/.openclaw";
@@ -35,7 +37,7 @@ const validateGatewayUrl = (value: string) => {
 };
 
 export default function NewGatewayPage() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
   const router = useRouter();
 
   const [name, setName] = useState("");
@@ -55,8 +57,22 @@ export default function NewGatewayPage() {
     null
   );
 
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const createMutation = useCreateGatewayApiV1GatewaysPost<ApiError>({
+    mutation: {
+      onSuccess: (result) => {
+        if (result.status === 200) {
+          router.push(`/gateways/${result.data.id}`);
+        }
+      },
+      onError: (err) => {
+        setError(err.message || "Something went wrong.");
+      },
+    },
+  });
+
+  const isLoading = createMutation.isPending;
 
   const canSubmit =
     Boolean(name.trim()) &&
@@ -64,11 +80,6 @@ export default function NewGatewayPage() {
     Boolean(mainSessionKey.trim()) &&
     Boolean(workspaceRoot.trim()) &&
     gatewayCheckStatus === "success";
-
-  useEffect(() => {
-    setGatewayCheckStatus("idle");
-    setGatewayCheckMessage(null);
-  }, [gatewayToken]);
 
   const runGatewayCheck = async () => {
     const validationError = validateGatewayUrl(gatewayUrl);
@@ -82,26 +93,26 @@ export default function NewGatewayPage() {
     setGatewayCheckStatus("checking");
     setGatewayCheckMessage(null);
     try {
-      const token = await getToken();
-      const params = new URLSearchParams({
+      const params: Record<string, string> = {
         gateway_url: gatewayUrl.trim(),
-      });
+      };
       if (gatewayToken.trim()) {
-        params.set("gateway_token", gatewayToken.trim());
+        params.gateway_token = gatewayToken.trim();
       }
       if (mainSessionKey.trim()) {
-        params.set("gateway_main_session_key", mainSessionKey.trim());
+        params.gateway_main_session_key = mainSessionKey.trim();
       }
-      const response = await fetch(
-        `${apiBase}/api/v1/gateways/status?${params.toString()}`,
-        {
-          headers: { Authorization: token ? `Bearer ${token}` : "" },
-        }
-      );
-      const data = await response.json();
-      if (!response.ok || !data?.connected) {
+
+      const response = await gatewaysStatusApiV1GatewaysStatusGet(params);
+      if (response.status !== 200) {
         setGatewayCheckStatus("error");
-        setGatewayCheckMessage(data?.error ?? "Unable to reach gateway.");
+        setGatewayCheckMessage("Unable to reach gateway.");
+        return;
+      }
+      const data = response.data;
+      if (!data.connected) {
+        setGatewayCheckStatus("error");
+        setGatewayCheckMessage(data.error ?? "Unable to reach gateway.");
         return;
       }
       setGatewayCheckStatus("success");
@@ -114,7 +125,7 @@ export default function NewGatewayPage() {
     }
   };
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isSignedIn) return;
 
@@ -138,35 +149,17 @@ export default function NewGatewayPage() {
       return;
     }
 
-    setIsLoading(true);
     setError(null);
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/gateways`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : "",
-        },
-        body: JSON.stringify({
-          name: name.trim(),
-          url: gatewayUrl.trim(),
-          token: gatewayToken.trim() || null,
-          main_session_key: mainSessionKey.trim(),
-          workspace_root: workspaceRoot.trim(),
-          skyll_enabled: skyllEnabled,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error("Unable to create gateway.");
-      }
-      const created = (await response.json()) as { id: string };
-      router.push(`/gateways/${created.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
+    createMutation.mutate({
+      data: {
+        name: name.trim(),
+        url: gatewayUrl.trim(),
+        token: gatewayToken.trim() || null,
+        main_session_key: mainSessionKey.trim(),
+        workspace_root: workspaceRoot.trim(),
+        skyll_enabled: skyllEnabled,
+      },
+    });
   };
 
   return (

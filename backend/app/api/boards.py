@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import re
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete
-from sqlmodel import Session, col, select
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import ActorContext, get_board_or_404, require_admin_auth, require_admin_or_agent
 from app.core.auth import AuthContext
+from app.core.time import utcnow
+from app.db import crud
 from app.db.session import get_session
 from app.integrations.openclaw_gateway import GatewayConfig as GatewayClientConfig
 from app.integrations.openclaw_gateway import (
@@ -27,6 +29,7 @@ from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.task_fingerprints import TaskFingerprint
 from app.models.tasks import Task
+from app.schemas.common import OkResponse
 from app.schemas.boards import BoardCreate, BoardRead, BoardUpdate
 
 router = APIRouter(prefix="/boards", tags=["boards"])
@@ -43,12 +46,56 @@ def _build_session_key(agent_name: str) -> str:
     return f"{AGENT_SESSION_PREFIX}:{_slugify(agent_name)}:main"
 
 
-def _board_gateway(
-    session: Session, board: Board
+async def _require_gateway(session: AsyncSession, gateway_id: object) -> Gateway:
+    gateway = await crud.get_by_id(session, Gateway, gateway_id)
+    if gateway is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="gateway_id is invalid",
+        )
+    return gateway
+
+
+async def _require_gateway_for_create(
+    payload: BoardCreate,
+    session: AsyncSession = Depends(get_session),
+) -> Gateway:
+    return await _require_gateway(session, payload.gateway_id)
+
+
+async def _apply_board_update(
+    *,
+    payload: BoardUpdate,
+    session: AsyncSession,
+    board: Board,
+) -> Board:
+    updates = payload.model_dump(exclude_unset=True)
+    if "gateway_id" in updates:
+        await _require_gateway(session, updates["gateway_id"])
+    for key, value in updates.items():
+        setattr(board, key, value)
+    if updates.get("board_type") == "goal":
+        # Validate only when explicitly switching to goal boards.
+        if not board.objective or not board.success_metrics:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Goal boards require objective and success_metrics",
+            )
+    if not board.gateway_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="gateway_id is required",
+        )
+    board.updated_at = utcnow()
+    return await crud.save(session, board)
+
+
+async def _board_gateway(
+    session: AsyncSession, board: Board
 ) -> tuple[Gateway | None, GatewayClientConfig | None]:
     if not board.gateway_id:
         return None, None
-    config = session.get(Gateway, board.gateway_id)
+    config = await session.get(Gateway, board.gateway_id)
     if config is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -103,36 +150,21 @@ async def _cleanup_agent_on_gateway(
 
 
 @router.get("", response_model=list[BoardRead])
-def list_boards(
-    session: Session = Depends(get_session),
+async def list_boards(
+    session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> list[Board]:
-    return list(session.exec(select(Board)))
+    return list(await session.exec(select(Board)))
 
 
 @router.post("", response_model=BoardRead)
-def create_board(
+async def create_board(
     payload: BoardCreate,
-    session: Session = Depends(get_session),
+    _gateway: Gateway = Depends(_require_gateway_for_create),
+    session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
 ) -> Board:
-    data = payload.model_dump()
-    if not data.get("gateway_id"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="gateway_id is required",
-        )
-    config = session.get(Gateway, data["gateway_id"])
-    if config is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="gateway_id is invalid",
-        )
-    board = Board.model_validate(data)
-    session.add(board)
-    session.commit()
-    session.refresh(board)
-    return board
+    return await crud.create(session, Board, **payload.model_dump())
 
 
 @router.get("/{board_id}", response_model=BoardRead)
@@ -144,60 +176,29 @@ def get_board(
 
 
 @router.patch("/{board_id}", response_model=BoardRead)
-def update_board(
+async def update_board(
     payload: BoardUpdate,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     board: Board = Depends(get_board_or_404),
     auth: AuthContext = Depends(require_admin_auth),
 ) -> Board:
-    updates = payload.model_dump(exclude_unset=True)
-    if "gateway_id" in updates:
-        if not updates.get("gateway_id"):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="gateway_id is required",
-            )
-        config = session.get(Gateway, updates["gateway_id"])
-        if config is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="gateway_id is invalid",
-            )
-    for key, value in updates.items():
-        setattr(board, key, value)
-    if updates.get("board_type") == "goal":
-        objective = updates.get("objective") or board.objective
-        metrics = updates.get("success_metrics") or board.success_metrics
-        if not objective or not metrics:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Goal boards require objective and success_metrics",
-            )
-    if not board.gateway_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="gateway_id is required",
-        )
-    session.add(board)
-    session.commit()
-    session.refresh(board)
-    return board
+    return await _apply_board_update(payload=payload, session=session, board=board)
 
 
-@router.delete("/{board_id}")
-def delete_board(
-    session: Session = Depends(get_session),
+@router.delete("/{board_id}", response_model=OkResponse)
+async def delete_board(
+    session: AsyncSession = Depends(get_session),
     board: Board = Depends(get_board_or_404),
     auth: AuthContext = Depends(require_admin_auth),
-) -> dict[str, bool]:
-    agents = list(session.exec(select(Agent).where(Agent.board_id == board.id)))
-    task_ids = list(session.exec(select(Task.id).where(Task.board_id == board.id)))
+) -> OkResponse:
+    agents = list(await session.exec(select(Agent).where(Agent.board_id == board.id)))
+    task_ids = list(await session.exec(select(Task.id).where(Task.board_id == board.id)))
 
-    config, client_config = _board_gateway(session, board)
+    config, client_config = await _board_gateway(session, board)
     if config and client_config:
         try:
             for agent in agents:
-                asyncio.run(_cleanup_agent_on_gateway(agent, config, client_config))
+                await _cleanup_agent_on_gateway(agent, config, client_config)
         except OpenClawGatewayError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -205,18 +206,18 @@ def delete_board(
             ) from exc
 
     if task_ids:
-        session.execute(delete(ActivityEvent).where(col(ActivityEvent.task_id).in_(task_ids)))
-        session.execute(delete(TaskFingerprint).where(col(TaskFingerprint.board_id) == board.id))
+        await session.execute(delete(ActivityEvent).where(col(ActivityEvent.task_id).in_(task_ids)))
+        await session.execute(delete(TaskFingerprint).where(col(TaskFingerprint.board_id) == board.id))
     if agents:
         agent_ids = [agent.id for agent in agents]
-        session.execute(delete(ActivityEvent).where(col(ActivityEvent.agent_id).in_(agent_ids)))
-        session.execute(delete(Agent).where(col(Agent.id).in_(agent_ids)))
-    session.execute(delete(Approval).where(col(Approval.board_id) == board.id))
-    session.execute(delete(BoardMemory).where(col(BoardMemory.board_id) == board.id))
-    session.execute(
+        await session.execute(delete(ActivityEvent).where(col(ActivityEvent.agent_id).in_(agent_ids)))
+        await session.execute(delete(Agent).where(col(Agent.id).in_(agent_ids)))
+    await session.execute(delete(Approval).where(col(Approval.board_id) == board.id))
+    await session.execute(delete(BoardMemory).where(col(BoardMemory.board_id) == board.id))
+    await session.execute(
         delete(BoardOnboardingSession).where(col(BoardOnboardingSession.board_id) == board.id)
     )
-    session.execute(delete(Task).where(col(Task.board_id) == board.id))
-    session.delete(board)
-    session.commit()
-    return {"ok": True}
+    await session.execute(delete(Task).where(col(Task.board_id) == board.id))
+    await session.delete(board)
+    await session.commit()
+    return OkResponse()

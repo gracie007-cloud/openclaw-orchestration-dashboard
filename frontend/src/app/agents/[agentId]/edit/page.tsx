@@ -1,10 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type getAgentApiV1AgentsAgentIdGetResponse,
+  useGetAgentApiV1AgentsAgentIdGet,
+  useUpdateAgentApiV1AgentsAgentIdPatch,
+} from "@/api/generated/agents/agents";
+import {
+  type listBoardsApiV1BoardsGetResponse,
+  useListBoardsApiV1BoardsGet,
+} from "@/api/generated/boards/boards";
+import type { AgentRead, AgentUpdate, BoardRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
@@ -20,33 +31,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { getApiBaseUrl } from "@/lib/api-base";
 import {
   DEFAULT_IDENTITY_PROFILE,
   DEFAULT_SOUL_TEMPLATE,
 } from "@/lib/agent-templates";
-
-const apiBase = getApiBaseUrl();
-
-type Agent = {
-  id: string;
-  name: string;
-  board_id?: string | null;
-  is_gateway_main?: boolean;
-  heartbeat_config?: {
-    every?: string;
-    target?: string;
-  } | null;
-  identity_profile?: IdentityProfile | null;
-  identity_template?: string | null;
-  soul_template?: string | null;
-};
-
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-};
 
 type IdentityProfile = {
   role: string;
@@ -72,7 +60,7 @@ const HEARTBEAT_TARGET_OPTIONS: SearchableSelectOption[] = [
   { value: "last", label: "Last channel" },
 ];
 
-const getBoardOptions = (boards: Board[]): SearchableSelectOption[] =>
+const getBoardOptions = (boards: BoardRead[]): SearchableSelectOption[] =>
   boards.map((board) => ({
     value: board.id,
     label: board.name,
@@ -100,157 +88,169 @@ const withIdentityDefaults = (
 });
 
 export default function EditAgentPage() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
   const router = useRouter();
   const params = useParams();
   const agentIdParam = params?.agentId;
   const agentId = Array.isArray(agentIdParam) ? agentIdParam[0] : agentIdParam;
 
-  const [agent, setAgent] = useState<Agent | null>(null);
-  const [name, setName] = useState("");
-  const [boards, setBoards] = useState<Board[]>([]);
-  const [boardId, setBoardId] = useState("");
-  const [boardTouched, setBoardTouched] = useState(false);
-  const [isGatewayMain, setIsGatewayMain] = useState(false);
-  const [heartbeatEvery, setHeartbeatEvery] = useState("10m");
-  const [heartbeatTarget, setHeartbeatTarget] = useState("none");
-  const [identityProfile, setIdentityProfile] = useState<IdentityProfile>({
-    ...DEFAULT_IDENTITY_PROFILE,
-  });
-  const [soulTemplate, setSoulTemplate] = useState(DEFAULT_SOUL_TEMPLATE);
-  const [isLoading, setIsLoading] = useState(false);
+  const [name, setName] = useState<string | undefined>(undefined);
+  const [boardId, setBoardId] = useState<string | undefined>(undefined);
+  const [isGatewayMain, setIsGatewayMain] = useState<boolean | undefined>(
+    undefined,
+  );
+  const [heartbeatEvery, setHeartbeatEvery] = useState<string | undefined>(
+    undefined,
+  );
+  const [heartbeatTarget, setHeartbeatTarget] = useState<string | undefined>(
+    undefined,
+  );
+  const [identityProfile, setIdentityProfile] = useState<
+    IdentityProfile | undefined
+  >(undefined);
+  const [soulTemplate, setSoulTemplate] = useState<string | undefined>(
+    undefined,
+  );
   const [error, setError] = useState<string | null>(null);
 
-  const loadBoards = async () => {
-    if (!isSignedIn) return;
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/boards`, {
-        headers: { Authorization: token ? `Bearer ${token}` : "" },
+  const boardsQuery = useListBoardsApiV1BoardsGet<
+    listBoardsApiV1BoardsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const agentQuery = useGetAgentApiV1AgentsAgentIdGet<
+    getAgentApiV1AgentsAgentIdGetResponse,
+    ApiError
+  >(agentId ?? "", {
+    query: {
+      enabled: Boolean(isSignedIn && agentId),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const updateMutation = useUpdateAgentApiV1AgentsAgentIdPatch<ApiError>({
+    mutation: {
+      onSuccess: () => {
+        if (agentId) {
+          router.push(`/agents/${agentId}`);
+        }
+      },
+      onError: (err) => {
+        setError(err.message || "Something went wrong.");
+      },
+    },
+  });
+
+  const boards = boardsQuery.data?.status === 200 ? boardsQuery.data.data : [];
+  const loadedAgent: AgentRead | null =
+    agentQuery.data?.status === 200 ? agentQuery.data.data : null;
+
+  const loadedHeartbeat = useMemo(() => {
+    const heartbeat = loadedAgent?.heartbeat_config;
+    if (heartbeat && typeof heartbeat === "object") {
+      const record = heartbeat as Record<string, unknown>;
+      const every = record.every;
+      const target = record.target;
+      return {
+        every: typeof every === "string" && every.trim() ? every : "10m",
+        target: typeof target === "string" && target.trim() ? target : "none",
+      };
+    }
+    return { every: "10m", target: "none" };
+  }, [loadedAgent?.heartbeat_config]);
+
+  const loadedIdentityProfile = useMemo(() => {
+    const identity = loadedAgent?.identity_profile;
+    if (identity && typeof identity === "object") {
+      const record = identity as Record<string, unknown>;
+      return withIdentityDefaults({
+        role: typeof record.role === "string" ? record.role : undefined,
+        communication_style:
+          typeof record.communication_style === "string"
+            ? record.communication_style
+            : undefined,
+        emoji: typeof record.emoji === "string" ? record.emoji : undefined,
       });
-      if (!response.ok) {
-        throw new Error("Unable to load boards.");
-      }
-      const data = (await response.json()) as Board[];
-      setBoards(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
     }
-  };
+    return withIdentityDefaults(null);
+  }, [loadedAgent?.identity_profile]);
 
-  const loadAgent = async () => {
-    if (!isSignedIn || !agentId) return;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/agents/${agentId}`, {
-        headers: { Authorization: token ? `Bearer ${token}` : "" },
-      });
-      if (!response.ok) {
-        throw new Error("Unable to load agent.");
-      }
-      const data = (await response.json()) as Agent;
-      setAgent(data);
-      setName(data.name);
-      setIsGatewayMain(Boolean(data.is_gateway_main));
-      if (!data.is_gateway_main && data.board_id) {
-        setBoardId(data.board_id);
-      } else {
-        setBoardId("");
-      }
-      setBoardTouched(false);
-      if (data.heartbeat_config?.every) {
-        setHeartbeatEvery(data.heartbeat_config.every);
-      }
-      if (data.heartbeat_config?.target) {
-        setHeartbeatTarget(data.heartbeat_config.target);
-      }
-      setIdentityProfile(withIdentityDefaults(data.identity_profile));
-      setSoulTemplate(data.soul_template?.trim() || DEFAULT_SOUL_TEMPLATE);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const loadedSoulTemplate = useMemo(() => {
+    return loadedAgent?.soul_template?.trim() || DEFAULT_SOUL_TEMPLATE;
+  }, [loadedAgent?.soul_template]);
 
-  useEffect(() => {
-    loadBoards();
-    loadAgent();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSignedIn, agentId]);
+  const isLoading =
+    boardsQuery.isLoading || agentQuery.isLoading || updateMutation.isPending;
+  const errorMessage =
+    error ?? agentQuery.error?.message ?? boardsQuery.error?.message ?? null;
 
-  useEffect(() => {
-    if (boardTouched || boardId || isGatewayMain) return;
-    if (agent?.board_id) {
-      setBoardId(agent.board_id);
-      return;
-    }
-    if (boards.length > 0) {
-      setBoardId(boards[0].id);
-    }
-  }, [agent, boards, boardId, isGatewayMain, boardTouched]);
+  const resolvedName = name ?? loadedAgent?.name ?? "";
+  const resolvedIsGatewayMain =
+    isGatewayMain ?? Boolean(loadedAgent?.is_gateway_main);
+  const resolvedHeartbeatEvery = heartbeatEvery ?? loadedHeartbeat.every;
+  const resolvedHeartbeatTarget = heartbeatTarget ?? loadedHeartbeat.target;
+  const resolvedIdentityProfile = identityProfile ?? loadedIdentityProfile;
+  const resolvedSoulTemplate = soulTemplate ?? loadedSoulTemplate;
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const resolvedBoardId = useMemo(() => {
+    if (resolvedIsGatewayMain) return boardId ?? "";
+    return boardId ?? loadedAgent?.board_id ?? boards[0]?.id ?? "";
+  }, [boardId, boards, loadedAgent?.board_id, resolvedIsGatewayMain]);
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!isSignedIn || !agentId) return;
-    const trimmed = name.trim();
+    if (!isSignedIn || !agentId || !loadedAgent) return;
+    const trimmed = resolvedName.trim();
     if (!trimmed) {
       setError("Agent name is required.");
       return;
     }
-    if (!isGatewayMain && !boardId) {
+    if (!resolvedIsGatewayMain && !resolvedBoardId) {
       setError("Select a board or mark this agent as the gateway main.");
       return;
     }
-    if (isGatewayMain && !boardId && !agent?.is_gateway_main && !agent?.board_id) {
+    if (
+      resolvedIsGatewayMain &&
+      !resolvedBoardId &&
+      !loadedAgent.is_gateway_main &&
+      !loadedAgent.board_id
+    ) {
       setError(
         "Select a board once so we can resolve the gateway main session key."
       );
       return;
     }
-    setIsLoading(true);
     setError(null);
-    try {
-      const token = await getToken();
-      const payload: Record<string, unknown> = {
-        name: trimmed,
-        heartbeat_config: {
-          every: heartbeatEvery.trim() || "10m",
-          target: heartbeatTarget,
-        },
-        identity_profile: normalizeIdentityProfile(identityProfile),
-        soul_template: soulTemplate.trim() || null,
-      };
-      if (!isGatewayMain) {
-        payload.board_id = boardId || null;
-      } else if (boardId) {
-        payload.board_id = boardId;
-      }
-      if (agent?.is_gateway_main !== isGatewayMain) {
-        payload.is_gateway_main = isGatewayMain;
-      }
-      const response = await fetch(
-        `${apiBase}/api/v1/agents/${agentId}?force=true`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-          body: JSON.stringify(payload),
-        }
-      );
-      if (!response.ok) {
-        throw new Error("Unable to update agent.");
-      }
-      router.push(`/agents/${agentId}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
+
+    const payload: AgentUpdate = {
+      name: trimmed,
+      heartbeat_config: {
+        every: resolvedHeartbeatEvery.trim() || "10m",
+        target: resolvedHeartbeatTarget,
+      } as unknown as Record<string, unknown>,
+      identity_profile: normalizeIdentityProfile(resolvedIdentityProfile) as unknown as Record<
+        string,
+        unknown
+      > | null,
+      soul_template: resolvedSoulTemplate.trim() || null,
+    };
+    if (!resolvedIsGatewayMain) {
+      payload.board_id = resolvedBoardId || null;
+    } else if (resolvedBoardId) {
+      payload.board_id = resolvedBoardId;
     }
+    if (Boolean(loadedAgent.is_gateway_main) !== resolvedIsGatewayMain) {
+      payload.is_gateway_main = resolvedIsGatewayMain;
+    }
+
+    updateMutation.mutate({ agentId, params: { force: true }, data: payload });
   };
 
   return (
@@ -275,7 +275,7 @@ export default function EditAgentPage() {
           <div className="border-b border-slate-200 bg-white px-8 py-6">
             <div>
               <h1 className="font-heading text-2xl font-semibold text-slate-900 tracking-tight">
-                {agent?.name ?? "Edit agent"}
+                {resolvedName.trim() ? resolvedName : loadedAgent?.name ?? "Edit agent"}
               </h1>
               <p className="mt-1 text-sm text-slate-500">
                 Status is controlled by agent heartbeat.
@@ -299,7 +299,7 @@ export default function EditAgentPage() {
                         Agent name <span className="text-red-500">*</span>
                       </label>
                       <Input
-                        value={name}
+                        value={resolvedName}
                         onChange={(event) => setName(event.target.value)}
                         placeholder="e.g. Deploy bot"
                         disabled={isLoading}
@@ -310,12 +310,12 @@ export default function EditAgentPage() {
                         Role
                       </label>
                       <Input
-                        value={identityProfile.role}
+                        value={resolvedIdentityProfile.role}
                         onChange={(event) =>
-                          setIdentityProfile((current) => ({
-                            ...current,
+                          setIdentityProfile({
+                            ...resolvedIdentityProfile,
                             role: event.target.value,
-                          }))
+                          })
                         }
                         placeholder="e.g. Founder, Social Media Manager"
                         disabled={isLoading}
@@ -327,7 +327,7 @@ export default function EditAgentPage() {
                       <div className="flex items-center justify-between">
                         <label className="text-sm font-medium text-slate-900">
                           Board
-                          {isGatewayMain ? (
+                          {resolvedIsGatewayMain ? (
                             <span className="ml-2 text-xs font-normal text-slate-500">
                               optional
                             </span>
@@ -335,12 +335,11 @@ export default function EditAgentPage() {
                             <span className="text-red-500"> *</span>
                           )}
                         </label>
-                        {boardId ? (
+                        {resolvedBoardId ? (
                           <button
                             type="button"
                             className="text-xs font-medium text-slate-600 hover:text-slate-900"
                             onClick={() => {
-                              setBoardTouched(true);
                               setBoardId("");
                             }}
                             disabled={isLoading}
@@ -351,13 +350,10 @@ export default function EditAgentPage() {
                       </div>
                       <SearchableSelect
                         ariaLabel="Select board"
-                        value={boardId}
-                        onValueChange={(value) => {
-                          setBoardTouched(true);
-                          setBoardId(value);
-                        }}
+                        value={resolvedBoardId}
+                        onValueChange={(value) => setBoardId(value)}
                         options={getBoardOptions(boards)}
-                        placeholder={isGatewayMain ? "No board (main agent)" : "Select board"}
+                        placeholder={resolvedIsGatewayMain ? "No board (main agent)" : "Select board"}
                         searchPlaceholder="Search boards..."
                         emptyMessage="No matching boards."
                         triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
@@ -365,7 +361,7 @@ export default function EditAgentPage() {
                         itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
                         disabled={boards.length === 0}
                       />
-                      {isGatewayMain ? (
+                      {resolvedIsGatewayMain ? (
                         <p className="text-xs text-slate-500">
                           Main agents are not attached to a board. If a board is
                           selected, it is only used to resolve the gateway main
@@ -382,12 +378,12 @@ export default function EditAgentPage() {
                         Emoji
                       </label>
                       <Select
-                        value={identityProfile.emoji}
+                        value={resolvedIdentityProfile.emoji}
                         onValueChange={(value) =>
-                          setIdentityProfile((current) => ({
-                            ...current,
+                          setIdentityProfile({
+                            ...resolvedIdentityProfile,
                             emoji: value,
-                          }))
+                          })
                         }
                         disabled={isLoading}
                       >
@@ -410,7 +406,7 @@ export default function EditAgentPage() {
                     <input
                       type="checkbox"
                       className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
-                      checked={isGatewayMain}
+                      checked={resolvedIsGatewayMain}
                       onChange={(event) => setIsGatewayMain(event.target.checked)}
                       disabled={isLoading}
                     />
@@ -437,12 +433,12 @@ export default function EditAgentPage() {
                       Communication style
                     </label>
                     <Input
-                      value={identityProfile.communication_style}
+                      value={resolvedIdentityProfile.communication_style}
                       onChange={(event) =>
-                        setIdentityProfile((current) => ({
-                          ...current,
+                        setIdentityProfile({
+                          ...resolvedIdentityProfile,
                           communication_style: event.target.value,
-                        }))
+                        })
                       }
                       disabled={isLoading}
                     />
@@ -452,7 +448,7 @@ export default function EditAgentPage() {
                       Soul template
                     </label>
                     <Textarea
-                      value={soulTemplate}
+                      value={resolvedSoulTemplate}
                       onChange={(event) => setSoulTemplate(event.target.value)}
                       rows={10}
                       disabled={isLoading}
@@ -471,7 +467,7 @@ export default function EditAgentPage() {
                       Interval
                     </label>
                     <Input
-                      value={heartbeatEvery}
+                      value={resolvedHeartbeatEvery}
                       onChange={(event) => setHeartbeatEvery(event.target.value)}
                       placeholder="e.g. 10m"
                       disabled={isLoading}
@@ -486,7 +482,7 @@ export default function EditAgentPage() {
                     </label>
                     <SearchableSelect
                       ariaLabel="Select heartbeat target"
-                      value={heartbeatTarget}
+                      value={resolvedHeartbeatTarget}
                       onValueChange={setHeartbeatTarget}
                       options={HEARTBEAT_TARGET_OPTIONS}
                       placeholder="Select target"
@@ -501,9 +497,9 @@ export default function EditAgentPage() {
                 </div>
               </div>
 
-              {error ? (
+              {errorMessage ? (
                 <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-600 shadow-sm">
-                  {error}
+                  {errorMessage}
                 </div>
               ) : null}
 

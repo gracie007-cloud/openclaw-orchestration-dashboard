@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from sqlmodel import Field
 
 from app.models.tenancy import TenantScoped
+from app.core.time import utcnow
 
 
 class Task(TenantScoped, table=True):
@@ -26,5 +27,5 @@ class Task(TenantScoped, table=True):
     auto_created: bool = Field(default=False)
     auto_reason: str | None = None
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)

@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
+from app.core.time import utcnow
+
 
 class BoardMemory(SQLModel, table=True):
     __tablename__ = "board_memory"
@@ -15,4 +17,4 @@ class BoardMemory(SQLModel, table=True):
     content: str
     tags: list[str] | None = Field(default=None, sa_column=Column(JSON))
     source: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)

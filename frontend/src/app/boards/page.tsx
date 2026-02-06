@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 
-import { SignInButton, SignedIn, SignedOut } from "@clerk/nextjs";
+import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 import {
   type ColumnDef,
   flexRender,
@@ -12,10 +12,17 @@ import {
 } from "@tanstack/react-table";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type listBoardsApiV1BoardsGetResponse,
+  getListBoardsApiV1BoardsGetQueryKey,
+  useDeleteBoardApiV1BoardsBoardIdDelete,
+  useListBoardsApiV1BoardsGet,
+} from "@/api/generated/boards/boards";
+import type { BoardRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { apiRequest, useAuthedMutation, useAuthedQuery } from "@/lib/api-query";
 import {
   Dialog,
   DialogContent,
@@ -24,13 +31,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-  updated_at: string;
-};
 
 const formatTimestamp = (value?: string | null) => {
   if (!value) return "—";
@@ -45,56 +45,72 @@ const formatTimestamp = (value?: string | null) => {
 };
 
 export default function BoardsPage() {
+  const { isSignedIn } = useAuth();
   const queryClient = useQueryClient();
-  const [deleteTarget, setDeleteTarget] = useState<Board | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BoardRead | null>(null);
 
-  const boardsQuery = useAuthedQuery<Board[]>(["boards"], "/api/v1/boards", {
-    refetchInterval: 30_000,
-    refetchOnMount: "always",
+  const boardsKey = getListBoardsApiV1BoardsGetQueryKey();
+  const boardsQuery = useListBoardsApiV1BoardsGet<
+    listBoardsApiV1BoardsGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchInterval: 30_000,
+      refetchOnMount: "always",
+    },
   });
 
-  const boards = useMemo(() => boardsQuery.data ?? [], [boardsQuery.data]);
+  const boards = useMemo(
+    () => (boardsQuery.data?.status === 200 ? boardsQuery.data.data : []),
+    [boardsQuery.data]
+  );
 
   const sortedBoards = useMemo(
     () => [...boards].sort((a, b) => a.name.localeCompare(b.name)),
     [boards]
   );
 
-  const deleteMutation = useAuthedMutation<void, Board, { previous?: Board[] }>(
-    async (board, token) =>
-      apiRequest(`/api/v1/boards/${board.id}`, {
-        method: "DELETE",
-        token,
-      }),
+  const deleteMutation = useDeleteBoardApiV1BoardsBoardIdDelete<
+    ApiError,
+    { previous?: listBoardsApiV1BoardsGetResponse }
+  >(
     {
-      onMutate: async (board) => {
-        await queryClient.cancelQueries({ queryKey: ["boards"] });
-        const previous = queryClient.getQueryData<Board[]>(["boards"]);
-        queryClient.setQueryData<Board[]>(["boards"], (old = []) =>
-          old.filter((item) => item.id !== board.id)
-        );
-        return { previous };
+      mutation: {
+        onMutate: async ({ boardId }) => {
+          await queryClient.cancelQueries({ queryKey: boardsKey });
+          const previous =
+            queryClient.getQueryData<listBoardsApiV1BoardsGetResponse>(boardsKey);
+          if (previous && previous.status === 200) {
+            queryClient.setQueryData<listBoardsApiV1BoardsGetResponse>(boardsKey, {
+              ...previous,
+              data: previous.data.filter((board) => board.id !== boardId),
+            });
+          }
+          return { previous };
+        },
+        onError: (_error, _board, context) => {
+          if (context?.previous) {
+            queryClient.setQueryData(boardsKey, context.previous);
+          }
+        },
+        onSuccess: () => {
+          setDeleteTarget(null);
+        },
+        onSettled: () => {
+          queryClient.invalidateQueries({ queryKey: boardsKey });
+        },
       },
-      onError: (_error, _board, context) => {
-        if (context?.previous) {
-          queryClient.setQueryData(["boards"], context.previous);
-        }
-      },
-      onSuccess: () => {
-        setDeleteTarget(null);
-      },
-      onSettled: () => {
-        queryClient.invalidateQueries({ queryKey: ["boards"] });
-      },
-    }
+    },
+    queryClient
   );
 
   const handleDelete = () => {
     if (!deleteTarget) return;
-    deleteMutation.mutate(deleteTarget);
+    deleteMutation.mutate({ boardId: deleteTarget.id });
   };
 
-  const columns = useMemo<ColumnDef<Board>[]>(
+  const columns = useMemo<ColumnDef<BoardRead>[]>(
     () => [
       {
         accessorKey: "name",

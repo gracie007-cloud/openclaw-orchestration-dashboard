@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal, Self
 from uuid import UUID
 
+from pydantic import model_validator
 from sqlmodel import SQLModel
+
+
+ApprovalStatus = Literal["pending", "approved", "rejected"]
 
 
 class ApprovalBase(SQLModel):
@@ -11,7 +16,7 @@ class ApprovalBase(SQLModel):
     payload: dict[str, object] | None = None
     confidence: int
     rubric_scores: dict[str, int] | None = None
-    status: str = "pending"
+    status: ApprovalStatus = "pending"
 
 
 class ApprovalCreate(ApprovalBase):
@@ -19,7 +24,13 @@ class ApprovalCreate(ApprovalBase):
 
 
 class ApprovalUpdate(SQLModel):
-    status: str | None = None
+    status: ApprovalStatus | None = None
+
+    @model_validator(mode="after")
+    def validate_status(self) -> Self:
+        if "status" in self.model_fields_set and self.status is None:
+            raise ValueError("status is required")
+        return self
 
 
 class ApprovalRead(ApprovalBase):

@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import JSON, Column
 from sqlmodel import Field
 
+from app.core.time import utcnow
 from app.models.tenancy import TenantScoped
 
 
@@ -22,5 +23,5 @@ class Board(TenantScoped, table=True):
     target_date: datetime | None = None
     goal_confirmed: bool = Field(default=False)
     goal_source: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)

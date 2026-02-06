@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 
-import { SignInButton, SignedIn, SignedOut } from "@clerk/nextjs";
+import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 import {
   type ColumnDef,
   type SortingState,
@@ -25,19 +25,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { apiRequest, useAuthedMutation, useAuthedQuery } from "@/lib/api-query";
 
-type Gateway = {
-  id: string;
-  name: string;
-  url: string;
-  token?: string | null;
-  main_session_key: string;
-  workspace_root: string;
-  skyll_enabled?: boolean;
-  created_at: string;
-  updated_at: string;
-};
+import { ApiError } from "@/api/mutator";
+import {
+  type listGatewaysApiV1GatewaysGetResponse,
+  getListGatewaysApiV1GatewaysGetQueryKey,
+  useDeleteGatewayApiV1GatewaysGatewayIdDelete,
+  useListGatewaysApiV1GatewaysGet,
+} from "@/api/generated/gateways/gateways";
+import type { GatewayRead } from "@/api/generated/model";
 
 const truncate = (value?: string | null, max = 24) => {
   if (!value) return "—";
@@ -58,62 +54,68 @@ const formatTimestamp = (value?: string | null) => {
 };
 
 export default function GatewaysPage() {
+  const { isSignedIn } = useAuth();
   const queryClient = useQueryClient();
   const [sorting, setSorting] = useState<SortingState>([
     { id: "name", desc: false },
   ]);
-  const [deleteTarget, setDeleteTarget] = useState<Gateway | null>(null);
-  const gatewaysQuery = useAuthedQuery<Gateway[]>(
-    ["gateways"],
-    "/api/v1/gateways",
-    {
+  const [deleteTarget, setDeleteTarget] = useState<GatewayRead | null>(null);
+
+  const gatewaysKey = getListGatewaysApiV1GatewaysGetQueryKey();
+  const gatewaysQuery = useListGatewaysApiV1GatewaysGet<
+    listGatewaysApiV1GatewaysGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
       refetchInterval: 30_000,
       refetchOnMount: "always",
-    }
-  );
+    },
+  });
 
-  const gateways = useMemo(() => gatewaysQuery.data ?? [], [gatewaysQuery.data]);
+  const gateways = useMemo(() => gatewaysQuery.data?.data ?? [], [gatewaysQuery.data]);
   const sortedGateways = useMemo(() => [...gateways], [gateways]);
 
-  const deleteMutation = useAuthedMutation<
-    void,
-    Gateway,
-    { previous?: Gateway[] }
+  const deleteMutation = useDeleteGatewayApiV1GatewaysGatewayIdDelete<
+    ApiError,
+    { previous?: listGatewaysApiV1GatewaysGetResponse }
   >(
-    async (gateway, token) =>
-      apiRequest(`/api/v1/gateways/${gateway.id}`, {
-        method: "DELETE",
-        token,
-      }),
     {
-      onMutate: async (gateway) => {
-        await queryClient.cancelQueries({ queryKey: ["gateways"] });
-        const previous = queryClient.getQueryData<Gateway[]>(["gateways"]);
-        queryClient.setQueryData<Gateway[]>(["gateways"], (old = []) =>
-          old.filter((item) => item.id !== gateway.id)
-        );
-        return { previous };
+      mutation: {
+        onMutate: async ({ gatewayId }) => {
+          await queryClient.cancelQueries({ queryKey: gatewaysKey });
+          const previous =
+            queryClient.getQueryData<listGatewaysApiV1GatewaysGetResponse>(gatewaysKey);
+          if (previous) {
+            queryClient.setQueryData<listGatewaysApiV1GatewaysGetResponse>(gatewaysKey, {
+              ...previous,
+              data: previous.data.filter((gateway) => gateway.id !== gatewayId),
+            });
+          }
+          return { previous };
+        },
+        onError: (_error, _gateway, context) => {
+          if (context?.previous) {
+            queryClient.setQueryData(gatewaysKey, context.previous);
+          }
+        },
+        onSuccess: () => {
+          setDeleteTarget(null);
+        },
+        onSettled: () => {
+          queryClient.invalidateQueries({ queryKey: gatewaysKey });
+        },
       },
-      onError: (_error, _gateway, context) => {
-        if (context?.previous) {
-          queryClient.setQueryData(["gateways"], context.previous);
-        }
-      },
-      onSuccess: () => {
-        setDeleteTarget(null);
-      },
-      onSettled: () => {
-        queryClient.invalidateQueries({ queryKey: ["gateways"] });
-      },
-    }
+    },
+    queryClient
   );
 
   const handleDelete = () => {
     if (!deleteTarget) return;
-    deleteMutation.mutate(deleteTarget);
+    deleteMutation.mutate({ gatewayId: deleteTarget.id });
   };
 
-  const columns = useMemo<ColumnDef<Gateway>[]>(
+  const columns = useMemo<ColumnDef<GatewayRead>[]>(
     () => [
       {
         accessorKey: "name",

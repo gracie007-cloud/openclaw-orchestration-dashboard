@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import Depends, Header, HTTPException, Request, status
-from sqlmodel import Session, col, select
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.agent_tokens import verify_agent_token
 from app.db.session import get_session
@@ -20,8 +21,10 @@ class AgentAuthContext:
     agent: Agent
 
 
-def _find_agent_for_token(session: Session, token: str) -> Agent | None:
-    agents = list(session.exec(select(Agent).where(col(Agent.agent_token_hash).is_not(None))))
+async def _find_agent_for_token(session: AsyncSession, token: str) -> Agent | None:
+    agents = list(
+        await session.exec(select(Agent).where(col(Agent.agent_token_hash).is_not(None)))
+    )
     for agent in agents:
         if agent.agent_token_hash and verify_agent_token(token, agent.agent_token_hash):
             return agent
@@ -48,11 +51,11 @@ def _resolve_agent_token(
     return None
 
 
-def get_agent_auth_context(
+async def get_agent_auth_context(
     request: Request,
     agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
 ) -> AgentAuthContext:
     resolved = _resolve_agent_token(agent_token, authorization, accept_authorization=True)
     if not resolved:
@@ -63,7 +66,7 @@ def get_agent_auth_context(
             bool(authorization),
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    agent = _find_agent_for_token(session, resolved)
+    agent = await _find_agent_for_token(session, resolved)
     if agent is None:
         logger.warning(
             "agent auth invalid token path=%s token_prefix=%s",
@@ -74,11 +77,11 @@ def get_agent_auth_context(
     return AgentAuthContext(actor_type="agent", agent=agent)
 
 
-def get_agent_auth_context_optional(
+async def get_agent_auth_context_optional(
     request: Request,
     agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
 ) -> AgentAuthContext | None:
     resolved = _resolve_agent_token(
         agent_token,
@@ -94,7 +97,7 @@ def get_agent_auth_context_optional(
                 bool(authorization),
             )
         return None
-    agent = _find_agent_for_token(session, resolved)
+    agent = await _find_agent_for_token(session, resolved)
     if agent is None:
         logger.warning(
             "agent auth optional invalid token path=%s token_prefix=%s",

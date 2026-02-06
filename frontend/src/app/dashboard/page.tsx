@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 
-import { SignInButton, SignedIn, SignedOut } from "@clerk/nextjs";
+import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 import {
   Area,
   AreaChart,
@@ -22,7 +22,11 @@ import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
 import MetricSparkline from "@/components/charts/metric-sparkline";
-import { useAuthedQuery } from "@/lib/api-query";
+import { ApiError } from "@/api/mutator";
+import {
+  type dashboardMetricsApiV1MetricsDashboardGetResponse,
+  useDashboardMetricsApiV1MetricsDashboardGet,
+} from "@/api/generated/metrics/metrics";
 
 type RangeKey = "24h" | "7d";
 type BucketKey = "hour" | "day";
@@ -249,16 +253,23 @@ function ChartCard({
 }
 
 export default function DashboardPage() {
-  const metricsQuery = useAuthedQuery<DashboardMetrics>(
-    ["metrics", "dashboard", "24h"],
-    "/api/v1/metrics/dashboard?range=24h",
+  const { isSignedIn } = useAuth();
+  const metricsQuery = useDashboardMetricsApiV1MetricsDashboardGet<
+    dashboardMetricsApiV1MetricsDashboardGetResponse,
+    ApiError
+  >(
+    { range: "24h" },
     {
-      refetchInterval: 15_000,
-      refetchOnMount: "always",
+      query: {
+        enabled: Boolean(isSignedIn),
+        refetchInterval: 15_000,
+        refetchOnMount: "always",
+      },
     },
   );
 
-  const metrics = metricsQuery.data ?? null;
+  const metrics =
+    metricsQuery.data?.status === 200 ? metricsQuery.data.data : null;
 
   const throughputSeries = useMemo(
     () => (metrics ? buildSeries(metrics.throughput.primary) : []),

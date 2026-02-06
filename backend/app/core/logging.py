@@ -20,7 +20,7 @@ def _trace(self: logging.Logger, message: str, *args: Any, **kwargs: Any) -> Non
         self._log(TRACE_LEVEL, message, args, **kwargs)
 
 
-logging.Logger.trace = _trace  # type: ignore[attr-defined]
+setattr(logging.Logger, "trace", _trace)
 
 _STANDARD_LOG_RECORD_ATTRS = {
     "args",

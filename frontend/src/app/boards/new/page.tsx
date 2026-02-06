@@ -1,34 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 
+import { ApiError } from "@/api/mutator";
+import { useCreateBoardApiV1BoardsPost } from "@/api/generated/boards/boards";
+import {
+  type listGatewaysApiV1GatewaysGetResponse,
+  useListGatewaysApiV1GatewaysGet,
+} from "@/api/generated/gateways/gateways";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import SearchableSelect from "@/components/ui/searchable-select";
-import { getApiBaseUrl } from "@/lib/api-base";
-
-const apiBase = getApiBaseUrl();
-
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-  gateway_id?: string | null;
-};
-
-type Gateway = {
-  id: string;
-  name: string;
-  url: string;
-  main_session_key: string;
-  workspace_root: string;
-};
 
 const slugify = (value: string) =>
   value
@@ -39,89 +27,73 @@ const slugify = (value: string) =>
 
 export default function NewBoardPage() {
   const router = useRouter();
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
 
   const [name, setName] = useState("");
-  const [gateways, setGateways] = useState<Gateway[]>([]);
   const [gatewayId, setGatewayId] = useState<string>("");
 
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isFormReady = Boolean(name.trim() && gatewayId);
+  const gatewaysQuery = useListGatewaysApiV1GatewaysGet<
+    listGatewaysApiV1GatewaysGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const createBoardMutation = useCreateBoardApiV1BoardsPost<ApiError>({
+    mutation: {
+      onSuccess: (result) => {
+        if (result.status === 200) {
+          router.push(`/boards/${result.data.id}`);
+        }
+      },
+      onError: (err) => {
+        setError(err.message || "Something went wrong.");
+      },
+    },
+  });
+
+  const gateways =
+    gatewaysQuery.data?.status === 200 ? gatewaysQuery.data.data : [];
+  const displayGatewayId = gatewayId || gateways[0]?.id || "";
+  const isLoading = gatewaysQuery.isLoading || createBoardMutation.isPending;
+  const errorMessage = error ?? gatewaysQuery.error?.message ?? null;
+
+  const isFormReady = Boolean(name.trim() && displayGatewayId);
 
   const gatewayOptions = useMemo(
     () => gateways.map((gateway) => ({ value: gateway.id, label: gateway.name })),
     [gateways]
   );
 
-  const loadGateways = async () => {
-    if (!isSignedIn) return;
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/gateways`, {
-        headers: { Authorization: token ? `Bearer ${token}` : "" },
-      });
-      if (!response.ok) {
-        throw new Error("Unable to load gateways.");
-      }
-      const data = (await response.json()) as Gateway[];
-      setGateways(data);
-      if (!gatewayId && data.length > 0) {
-        setGatewayId(data[0].id);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    }
-  };
-
-  useEffect(() => {
-    loadGateways();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSignedIn]);
-
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isSignedIn) return;
     const trimmedName = name.trim();
+    const resolvedGatewayId = displayGatewayId;
     if (!trimmedName) {
       setError("Board name is required.");
       return;
     }
-    if (!gatewayId) {
+    if (!resolvedGatewayId) {
       setError("Select a gateway before creating a board.");
       return;
     }
 
-    setIsLoading(true);
     setError(null);
-    try {
-      const token = await getToken();
 
-      const payload: Partial<Board> = {
+    createBoardMutation.mutate({
+      data: {
         name: trimmedName,
         slug: slugify(trimmedName),
-        gateway_id: gatewayId || null,
-      };
-
-      const response = await fetch(`${apiBase}/api/v1/boards`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : "",
-        },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        throw new Error("Unable to create board.");
-      }
-      const created = (await response.json()) as Board;
-      router.push(`/boards/${created.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
+        gateway_id: resolvedGatewayId,
+      },
+    });
   };
 
   return (
@@ -178,7 +150,7 @@ export default function NewBoardPage() {
                     </label>
                     <SearchableSelect
                       ariaLabel="Select gateway"
-                      value={gatewayId}
+                      value={displayGatewayId}
                       onValueChange={setGatewayId}
                       options={gatewayOptions}
                       placeholder="Select gateway"
@@ -208,7 +180,9 @@ export default function NewBoardPage() {
                 </div>
               ) : null}
 
-              {error ? <p className="text-sm text-red-500">{error}</p> : null}
+              {errorMessage ? (
+                <p className="text-sm text-red-500">{errorMessage}</p>
+              ) : null}
 
               <div className="flex justify-end gap-3">
                 <Button

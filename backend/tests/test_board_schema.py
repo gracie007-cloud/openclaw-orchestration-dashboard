@@ -1,4 +1,5 @@
 import pytest
+from uuid import uuid4
 
 from app.schemas.board_onboarding import BoardOnboardingConfirm
 from app.schemas.boards import BoardCreate
@@ -9,6 +10,7 @@ def test_goal_board_requires_objective_and_metrics_when_confirmed():
         BoardCreate(
             name="Goal Board",
             slug="goal",
+            gateway_id=uuid4(),
             board_type="goal",
             goal_confirmed=True,
         )
@@ -16,6 +18,7 @@ def test_goal_board_requires_objective_and_metrics_when_confirmed():
     BoardCreate(
         name="Goal Board",
         slug="goal",
+        gateway_id=uuid4(),
         board_type="goal",
         goal_confirmed=True,
         objective="Launch onboarding",
@@ -24,11 +27,11 @@ def test_goal_board_requires_objective_and_metrics_when_confirmed():
 
 
 def test_goal_board_allows_missing_objective_before_confirmation():
-    BoardCreate(name="Draft", slug="draft", board_type="goal")
+    BoardCreate(name="Draft", slug="draft", gateway_id=uuid4(), board_type="goal")
 
 
 def test_general_board_allows_missing_objective():
-    BoardCreate(name="General", slug="general", board_type="general")
+    BoardCreate(name="General", slug="general", gateway_id=uuid4(), board_type="general")
 
 
 def test_onboarding_confirm_requires_goal_fields():

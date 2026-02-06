@@ -4,9 +4,16 @@
  * Mission Control API
  * OpenAPI spec version: 0.1.0
  */
+import type { BoardCreateSuccessMetrics } from "./boardCreateSuccessMetrics";
 
 export interface BoardCreate {
   name: string;
   slug: string;
-  gateway_id?: string | null;
+  gateway_id: string;
+  board_type?: string;
+  objective?: string | null;
+  success_metrics?: BoardCreateSuccessMetrics;
+  target_date?: string | null;
+  goal_confirmed?: boolean;
+  goal_source?: string | null;
 }

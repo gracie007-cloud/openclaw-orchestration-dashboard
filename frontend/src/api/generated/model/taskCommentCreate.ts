@@ -6,5 +6,6 @@
  */
 
 export interface TaskCommentCreate {
+  /** @minLength 1 */
   message: string;
 }

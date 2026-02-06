@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from sqlmodel import SQLModel
+
+from app.schemas.common import NonEmptyStr
 
 
 class BoardOnboardingStart(SQLModel):
@@ -12,7 +15,7 @@ class BoardOnboardingStart(SQLModel):
 
 
 class BoardOnboardingAnswer(SQLModel):
-    answer: str
+    answer: NonEmptyStr
     other_text: str | None = None
 
 
@@ -23,11 +26,28 @@ class BoardOnboardingConfirm(SQLModel):
     target_date: datetime | None = None
 
     @model_validator(mode="after")
-    def validate_goal_fields(self):
+    def validate_goal_fields(self) -> Self:
         if self.board_type == "goal":
             if not self.objective or not self.success_metrics:
                 raise ValueError("Confirmed goal boards require objective and success_metrics")
         return self
+
+
+class BoardOnboardingQuestionOption(SQLModel):
+    id: NonEmptyStr
+    label: NonEmptyStr
+
+
+class BoardOnboardingAgentQuestion(SQLModel):
+    question: NonEmptyStr
+    options: list[BoardOnboardingQuestionOption] = Field(min_length=1)
+
+
+class BoardOnboardingAgentComplete(BoardOnboardingConfirm):
+    status: Literal["complete"]
+
+
+BoardOnboardingAgentUpdate = BoardOnboardingAgentComplete | BoardOnboardingAgentQuestion
 
 
 class BoardOnboardingRead(SQLModel):

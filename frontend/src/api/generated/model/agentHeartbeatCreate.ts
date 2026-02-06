@@ -7,6 +7,7 @@
 
 export interface AgentHeartbeatCreate {
   status?: string | null;
+  /** @minLength 1 */
   name: string;
   board_id?: string | null;
 }

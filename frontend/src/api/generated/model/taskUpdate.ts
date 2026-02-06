@@ -8,7 +8,7 @@
 export interface TaskUpdate {
   title?: string | null;
   description?: string | null;
-  status?: string | null;
+  status?: "inbox" | "in_progress" | "review" | "done" | null;
   priority?: string | null;
   due_at?: string | null;
   assigned_agent_id?: string | null;

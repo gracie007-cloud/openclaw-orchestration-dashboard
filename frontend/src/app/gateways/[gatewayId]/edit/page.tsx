@@ -1,18 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 import { CheckCircle2, RefreshCcw, XCircle } from "lucide-react";
 
+import { ApiError } from "@/api/mutator";
+import {
+  gatewaysStatusApiV1GatewaysStatusGet,
+  type getGatewayApiV1GatewaysGatewayIdGetResponse,
+  useGetGatewayApiV1GatewaysGatewayIdGet,
+  useUpdateGatewayApiV1GatewaysGatewayIdPatch,
+} from "@/api/generated/gateways/gateways";
+import type { GatewayUpdate } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { getApiBaseUrl } from "@/lib/api-base";
-
-const apiBase = getApiBaseUrl();
 
 const DEFAULT_MAIN_SESSION_KEY = "agent:main:main";
 const DEFAULT_WORKSPACE_ROOT = "~/.openclaw";
@@ -34,18 +39,8 @@ const validateGatewayUrl = (value: string) => {
   }
 };
 
-type Gateway = {
-  id: string;
-  name: string;
-  url: string;
-  token?: string | null;
-  main_session_key: string;
-  workspace_root: string;
-  skyll_enabled?: boolean;
-};
-
 export default function EditGatewayPage() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
   const router = useRouter();
   const params = useParams();
   const gatewayIdParam = params?.gatewayId;
@@ -53,15 +48,20 @@ export default function EditGatewayPage() {
     ? gatewayIdParam[0]
     : gatewayIdParam;
 
-  const [gateway, setGateway] = useState<Gateway | null>(null);
-  const [name, setName] = useState("");
-  const [gatewayUrl, setGatewayUrl] = useState("");
-  const [gatewayToken, setGatewayToken] = useState("");
-  const [mainSessionKey, setMainSessionKey] = useState(
-    DEFAULT_MAIN_SESSION_KEY
+  const [name, setName] = useState<string | undefined>(undefined);
+  const [gatewayUrl, setGatewayUrl] = useState<string | undefined>(undefined);
+  const [gatewayToken, setGatewayToken] = useState<string | undefined>(
+    undefined,
   );
-  const [workspaceRoot, setWorkspaceRoot] = useState(DEFAULT_WORKSPACE_ROOT);
-  const [skyllEnabled, setSkyllEnabled] = useState(false);
+  const [mainSessionKey, setMainSessionKey] = useState<string | undefined>(
+    undefined,
+  );
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | undefined>(
+    undefined,
+  );
+  const [skyllEnabled, setSkyllEnabled] = useState<boolean | undefined>(
+    undefined,
+  );
 
   const [gatewayUrlError, setGatewayUrlError] = useState<string | null>(null);
   const [gatewayCheckStatus, setGatewayCheckStatus] = useState<
@@ -71,48 +71,58 @@ export default function EditGatewayPage() {
     null
   );
 
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const gatewayQuery = useGetGatewayApiV1GatewaysGatewayIdGet<
+    getGatewayApiV1GatewaysGatewayIdGetResponse,
+    ApiError
+  >(gatewayId ?? "", {
+    query: {
+      enabled: Boolean(isSignedIn && gatewayId),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const updateMutation = useUpdateGatewayApiV1GatewaysGatewayIdPatch<ApiError>({
+    mutation: {
+      onSuccess: (result) => {
+        if (result.status === 200) {
+          router.push(`/gateways/${result.data.id}`);
+        }
+      },
+      onError: (err) => {
+        setError(err.message || "Something went wrong.");
+      },
+    },
+  });
+
+  const loadedGateway =
+    gatewayQuery.data?.status === 200 ? gatewayQuery.data.data : null;
+  const resolvedName = name ?? loadedGateway?.name ?? "";
+  const resolvedGatewayUrl = gatewayUrl ?? loadedGateway?.url ?? "";
+  const resolvedGatewayToken = gatewayToken ?? loadedGateway?.token ?? "";
+  const resolvedMainSessionKey =
+    mainSessionKey ??
+    loadedGateway?.main_session_key ??
+    DEFAULT_MAIN_SESSION_KEY;
+  const resolvedWorkspaceRoot =
+    workspaceRoot ?? loadedGateway?.workspace_root ?? DEFAULT_WORKSPACE_ROOT;
+  const resolvedSkyllEnabled =
+    skyllEnabled ?? Boolean(loadedGateway?.skyll_enabled);
+
+  const isLoading = gatewayQuery.isLoading || updateMutation.isPending;
+  const errorMessage = error ?? gatewayQuery.error?.message ?? null;
+
   const canSubmit =
-    Boolean(name.trim()) &&
-    Boolean(gatewayUrl.trim()) &&
-    Boolean(mainSessionKey.trim()) &&
-    Boolean(workspaceRoot.trim()) &&
+    Boolean(resolvedName.trim()) &&
+    Boolean(resolvedGatewayUrl.trim()) &&
+    Boolean(resolvedMainSessionKey.trim()) &&
+    Boolean(resolvedWorkspaceRoot.trim()) &&
     gatewayCheckStatus === "success";
 
-  useEffect(() => {
-    if (!isSignedIn || !gatewayId) return;
-    const loadGateway = async () => {
-      try {
-        const token = await getToken();
-        const response = await fetch(
-          `${apiBase}/api/v1/gateways/${gatewayId}`,
-          {
-            headers: { Authorization: token ? `Bearer ${token}` : "" },
-          }
-        );
-        if (!response.ok) {
-          throw new Error("Unable to load gateway.");
-        }
-        const data = (await response.json()) as Gateway;
-        setGateway(data);
-        setName(data.name ?? "");
-        setGatewayUrl(data.url ?? "");
-        setGatewayToken(data.token ?? "");
-        setMainSessionKey(data.main_session_key ?? DEFAULT_MAIN_SESSION_KEY);
-        setWorkspaceRoot(data.workspace_root ?? DEFAULT_WORKSPACE_ROOT);
-        setSkyllEnabled(Boolean(data.skyll_enabled));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Something went wrong.");
-      }
-    };
-    loadGateway();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayId, isSignedIn]);
-
   const runGatewayCheck = async () => {
-    const validationError = validateGatewayUrl(gatewayUrl);
+    const validationError = validateGatewayUrl(resolvedGatewayUrl);
     setGatewayUrlError(validationError);
     if (validationError) {
       setGatewayCheckStatus("error");
@@ -123,26 +133,25 @@ export default function EditGatewayPage() {
     setGatewayCheckStatus("checking");
     setGatewayCheckMessage(null);
     try {
-      const token = await getToken();
-      const params = new URLSearchParams({
-        gateway_url: gatewayUrl.trim(),
-      });
-      if (gatewayToken.trim()) {
-        params.set("gateway_token", gatewayToken.trim());
+      const params: Record<string, string> = {
+        gateway_url: resolvedGatewayUrl.trim(),
+      };
+      if (resolvedGatewayToken.trim()) {
+        params.gateway_token = resolvedGatewayToken.trim();
       }
-      if (mainSessionKey.trim()) {
-        params.set("gateway_main_session_key", mainSessionKey.trim());
+      if (resolvedMainSessionKey.trim()) {
+        params.gateway_main_session_key = resolvedMainSessionKey.trim();
       }
-      const response = await fetch(
-        `${apiBase}/api/v1/gateways/status?${params.toString()}`,
-        {
-          headers: { Authorization: token ? `Bearer ${token}` : "" },
-        }
-      );
-      const data = await response.json();
-      if (!response.ok || !data?.connected) {
+      const response = await gatewaysStatusApiV1GatewaysStatusGet(params);
+      if (response.status !== 200) {
         setGatewayCheckStatus("error");
-        setGatewayCheckMessage(data?.error ?? "Unable to reach gateway.");
+        setGatewayCheckMessage("Unable to reach gateway.");
+        return;
+      }
+      const data = response.data;
+      if (!data.connected) {
+        setGatewayCheckStatus("error");
+        setGatewayCheckMessage(data.error ?? "Unable to reach gateway.");
         return;
       }
       setGatewayCheckStatus("success");
@@ -155,60 +164,42 @@ export default function EditGatewayPage() {
     }
   };
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isSignedIn || !gatewayId) return;
 
-    if (!name.trim()) {
+    if (!resolvedName.trim()) {
       setError("Gateway name is required.");
       return;
     }
-    const gatewayValidation = validateGatewayUrl(gatewayUrl);
+    const gatewayValidation = validateGatewayUrl(resolvedGatewayUrl);
     setGatewayUrlError(gatewayValidation);
     if (gatewayValidation) {
       setGatewayCheckStatus("error");
       setGatewayCheckMessage(gatewayValidation);
       return;
     }
-    if (!mainSessionKey.trim()) {
+    if (!resolvedMainSessionKey.trim()) {
       setError("Main session key is required.");
       return;
     }
-    if (!workspaceRoot.trim()) {
+    if (!resolvedWorkspaceRoot.trim()) {
       setError("Workspace root is required.");
       return;
     }
 
-    setIsLoading(true);
     setError(null);
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/gateways/${gatewayId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : "",
-        },
-        body: JSON.stringify({
-          name: name.trim(),
-          url: gatewayUrl.trim(),
-          token: gatewayToken.trim() || null,
-          main_session_key: mainSessionKey.trim(),
-          workspace_root: workspaceRoot.trim(),
-          skyll_enabled: skyllEnabled,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error("Unable to update gateway.");
-      }
-      const updated = (await response.json()) as Gateway;
-      setGateway(updated);
-      router.push(`/gateways/${updated.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
+
+    const payload: GatewayUpdate = {
+      name: resolvedName.trim(),
+      url: resolvedGatewayUrl.trim(),
+      token: resolvedGatewayToken.trim() || null,
+      main_session_key: resolvedMainSessionKey.trim(),
+      workspace_root: resolvedWorkspaceRoot.trim(),
+      skyll_enabled: resolvedSkyllEnabled,
+    };
+
+    updateMutation.mutate({ gatewayId, data: payload });
   };
 
   return (
@@ -232,7 +223,9 @@ export default function EditGatewayPage() {
           <div className="border-b border-slate-200 bg-white px-8 py-6">
             <div>
               <h1 className="font-heading text-2xl font-semibold text-slate-900 tracking-tight">
-                {gateway ? `Edit gateway — ${gateway.name}` : "Edit gateway"}
+                {resolvedName.trim()
+                  ? `Edit gateway — ${resolvedName.trim()}`
+                  : "Edit gateway"}
               </h1>
               <p className="mt-1 text-sm text-slate-500">
                 Update connection settings for this OpenClaw gateway.
@@ -251,7 +244,7 @@ export default function EditGatewayPage() {
                     Gateway name <span className="text-red-500">*</span>
                   </label>
                   <Input
-                    value={name}
+                    value={resolvedName}
                     onChange={(event) => setName(event.target.value)}
                     placeholder="Primary gateway"
                     disabled={isLoading}
@@ -273,15 +266,15 @@ export default function EditGatewayPage() {
                     <button
                       type="button"
                       role="switch"
-                      aria-checked={skyllEnabled}
-                      onClick={() => setSkyllEnabled((prev) => !prev)}
+                      aria-checked={resolvedSkyllEnabled}
+                      onClick={() => setSkyllEnabled(!resolvedSkyllEnabled)}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
-                        skyllEnabled ? "bg-blue-600" : "bg-slate-200"
+                        resolvedSkyllEnabled ? "bg-blue-600" : "bg-slate-200"
                       }`}
                     >
                       <span
                         className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-                          skyllEnabled ? "translate-x-5" : "translate-x-1"
+                          resolvedSkyllEnabled ? "translate-x-5" : "translate-x-1"
                         }`}
                       />
                     </button>
@@ -296,7 +289,7 @@ export default function EditGatewayPage() {
                   </label>
                   <div className="relative">
                     <Input
-                      value={gatewayUrl}
+                      value={resolvedGatewayUrl}
                       onChange={(event) => {
                         setGatewayUrl(event.target.value);
                         setGatewayUrlError(null);
@@ -344,7 +337,7 @@ export default function EditGatewayPage() {
                     Gateway token
                   </label>
                   <Input
-                    value={gatewayToken}
+                    value={resolvedGatewayToken}
                     onChange={(event) => {
                       setGatewayToken(event.target.value);
                       setGatewayCheckStatus("idle");
@@ -363,7 +356,7 @@ export default function EditGatewayPage() {
                     Main session key <span className="text-red-500">*</span>
                   </label>
                   <Input
-                    value={mainSessionKey}
+                    value={resolvedMainSessionKey}
                     onChange={(event) => {
                       setMainSessionKey(event.target.value);
                       setGatewayCheckStatus("idle");
@@ -378,7 +371,7 @@ export default function EditGatewayPage() {
                     Workspace root <span className="text-red-500">*</span>
                   </label>
                   <Input
-                    value={workspaceRoot}
+                    value={resolvedWorkspaceRoot}
                     onChange={(event) => setWorkspaceRoot(event.target.value)}
                     placeholder={DEFAULT_WORKSPACE_ROOT}
                     disabled={isLoading}
@@ -387,7 +380,9 @@ export default function EditGatewayPage() {
               </div>
 
 
-              {error ? <p className="text-sm text-red-500">{error}</p> : null}
+              {errorMessage ? (
+                <p className="text-sm text-red-500">{errorMessage}</p>
+              ) : null}
 
               <div className="flex justify-end gap-3">
                 <Button

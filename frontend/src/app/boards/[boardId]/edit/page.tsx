@@ -1,10 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
 import { SignInButton, SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
 
+import { ApiError } from "@/api/mutator";
+import {
+  type getBoardApiV1BoardsBoardIdGetResponse,
+  useGetBoardApiV1BoardsBoardIdGet,
+  useUpdateBoardApiV1BoardsBoardIdPatch,
+} from "@/api/generated/boards/boards";
+import {
+  type listGatewaysApiV1GatewaysGetResponse,
+  useListGatewaysApiV1GatewaysGet,
+} from "@/api/generated/gateways/gateways";
+import type { BoardRead, BoardUpdate } from "@/api/generated/model";
 import { BoardApprovalsPanel } from "@/components/BoardApprovalsPanel";
 import { BoardGoalPanel } from "@/components/BoardGoalPanel";
 import { BoardOnboardingChat } from "@/components/BoardOnboardingChat";
@@ -22,28 +33,6 @@ import {
 } from "@/components/ui/select";
 import SearchableSelect from "@/components/ui/searchable-select";
 import { Textarea } from "@/components/ui/textarea";
-import { getApiBaseUrl } from "@/lib/api-base";
-
-const apiBase = getApiBaseUrl();
-
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-  gateway_id?: string | null;
-  board_type?: string;
-  objective?: string | null;
-  success_metrics?: Record<string, unknown> | null;
-  target_date?: string | null;
-};
-
-type Gateway = {
-  id: string;
-  name: string;
-  url: string;
-  main_session_key: string;
-  workspace_root: string;
-};
 
 const slugify = (value: string) =>
   value
@@ -60,158 +49,147 @@ const toDateInput = (value?: string | null) => {
 };
 
 export default function EditBoardPage() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
   const router = useRouter();
   const params = useParams();
   const boardIdParam = params?.boardId;
   const boardId = Array.isArray(boardIdParam) ? boardIdParam[0] : boardIdParam;
 
-  const [board, setBoard] = useState<Board | null>(null);
-  const [name, setName] = useState("");
-  const [gateways, setGateways] = useState<Gateway[]>([]);
-  const [gatewayId, setGatewayId] = useState<string>("");
-  const [boardType, setBoardType] = useState("goal");
-  const [objective, setObjective] = useState("");
-  const [successMetrics, setSuccessMetrics] = useState("");
-  const [targetDate, setTargetDate] = useState("");
+  const [board, setBoard] = useState<BoardRead | null>(null);
+  const [name, setName] = useState<string | undefined>(undefined);
+  const [gatewayId, setGatewayId] = useState<string | undefined>(undefined);
+  const [boardType, setBoardType] = useState<string | undefined>(undefined);
+  const [objective, setObjective] = useState<string | undefined>(undefined);
+  const [successMetrics, setSuccessMetrics] = useState<string | undefined>(
+    undefined,
+  );
+  const [targetDate, setTargetDate] = useState<string | undefined>(undefined);
 
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
 
-  const isFormReady = Boolean(name.trim() && gatewayId);
+  const gatewaysQuery = useListGatewaysApiV1GatewaysGet<
+    listGatewaysApiV1GatewaysGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const boardQuery = useGetBoardApiV1BoardsBoardIdGet<
+    getBoardApiV1BoardsBoardIdGetResponse,
+    ApiError
+  >(boardId ?? "", {
+    query: {
+      enabled: Boolean(isSignedIn && boardId),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const updateBoardMutation = useUpdateBoardApiV1BoardsBoardIdPatch<ApiError>({
+    mutation: {
+      onSuccess: (result) => {
+        if (result.status === 200) {
+          router.push(`/boards/${result.data.id}`);
+        }
+      },
+      onError: (err) => {
+        setError(err.message || "Something went wrong.");
+      },
+    },
+  });
+
+  const gateways =
+    gatewaysQuery.data?.status === 200 ? gatewaysQuery.data.data : [];
+  const loadedBoard: BoardRead | null =
+    boardQuery.data?.status === 200 ? boardQuery.data.data : null;
+  const baseBoard = board ?? loadedBoard;
+
+  const resolvedName = name ?? baseBoard?.name ?? "";
+  const resolvedGatewayId = gatewayId ?? baseBoard?.gateway_id ?? "";
+  const resolvedBoardType = boardType ?? baseBoard?.board_type ?? "goal";
+  const resolvedObjective = objective ?? baseBoard?.objective ?? "";
+  const resolvedSuccessMetrics =
+    successMetrics ??
+    (baseBoard?.success_metrics
+      ? JSON.stringify(baseBoard.success_metrics, null, 2)
+      : "");
+  const resolvedTargetDate =
+    targetDate ?? toDateInput(baseBoard?.target_date);
+
+  const displayGatewayId = resolvedGatewayId || gateways[0]?.id || "";
+
+  const isLoading =
+    gatewaysQuery.isLoading || boardQuery.isLoading || updateBoardMutation.isPending;
+  const errorMessage =
+    error ??
+    gatewaysQuery.error?.message ??
+    boardQuery.error?.message ??
+    null;
+
+  const isFormReady = Boolean(resolvedName.trim() && displayGatewayId);
 
   const gatewayOptions = useMemo(
     () => gateways.map((gateway) => ({ value: gateway.id, label: gateway.name })),
-    [gateways]
+    [gateways],
   );
 
-  const loadGateways = async (): Promise<Gateway[]> => {
-    if (!isSignedIn) return [];
-    const token = await getToken();
-    const response = await fetch(`${apiBase}/api/v1/gateways`, {
-      headers: { Authorization: token ? `Bearer ${token}` : "" },
-    });
-    if (!response.ok) {
-      throw new Error("Unable to load gateways.");
-    }
-    const data = (await response.json()) as Gateway[];
-    setGateways(data);
-    return data;
-  };
-
-  const loadBoard = async () => {
-    if (!isSignedIn || !boardId) return;
-    try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/boards/${boardId}`, {
-        headers: { Authorization: token ? `Bearer ${token}` : "" },
-      });
-      if (!response.ok) {
-        throw new Error("Unable to load board.");
-      }
-      const data = (await response.json()) as Board;
-      setBoard(data);
-      setName(data.name ?? "");
-      if (data.gateway_id) {
-        setGatewayId(data.gateway_id);
-      }
-      setBoardType(data.board_type ?? "goal");
-      setObjective(data.objective ?? "");
-      setSuccessMetrics(
-        data.success_metrics ? JSON.stringify(data.success_metrics, null, 2) : ""
-      );
-      setTargetDate(toDateInput(data.target_date));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    }
-  };
-
-  const handleOnboardingConfirmed = (updated: Board) => {
+  const handleOnboardingConfirmed = (updated: BoardRead) => {
     setBoard(updated);
     setBoardType(updated.board_type ?? "goal");
     setObjective(updated.objective ?? "");
     setSuccessMetrics(
-      updated.success_metrics ? JSON.stringify(updated.success_metrics, null, 2) : ""
+      updated.success_metrics ? JSON.stringify(updated.success_metrics, null, 2) : "",
     );
     setTargetDate(toDateInput(updated.target_date));
     setIsOnboardingOpen(false);
   };
 
-  useEffect(() => {
-    loadBoard();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardId, isSignedIn]);
-
-  useEffect(() => {
-    if (!isSignedIn) return;
-    loadGateways()
-      .then((configs) => {
-        if (!gatewayId && configs.length > 0) {
-          setGatewayId(configs[0].id);
-        }
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Something went wrong.");
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSignedIn]);
-
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isSignedIn || !boardId) return;
-    if (!name.trim()) {
+    const trimmedName = resolvedName.trim();
+    if (!trimmedName) {
       setError("Board name is required.");
       return;
     }
-    if (!gatewayId) {
+    const resolvedGatewayId = displayGatewayId;
+    if (!resolvedGatewayId) {
       setError("Select a gateway before saving.");
       return;
     }
 
-    setIsLoading(true);
     setError(null);
     setMetricsError(null);
-    try {
-      const token = await getToken();
-      let parsedMetrics: Record<string, unknown> | null = null;
-      if (successMetrics.trim()) {
-        try {
-          parsedMetrics = JSON.parse(successMetrics) as Record<string, unknown>;
-        } catch {
-          setMetricsError("Success metrics must be valid JSON.");
-          setIsLoading(false);
-          return;
-        }
-      }
 
-      const response = await fetch(`${apiBase}/api/v1/boards/${boardId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : "",
-        },
-        body: JSON.stringify({
-          name: name.trim(),
-          slug: slugify(name.trim()),
-          gateway_id: gatewayId || null,
-          board_type: boardType,
-          objective: objective.trim() || null,
-          success_metrics: parsedMetrics,
-          target_date: targetDate ? new Date(targetDate).toISOString() : null,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error("Unable to update board.");
+    let parsedMetrics: Record<string, unknown> | null = null;
+    if (resolvedSuccessMetrics.trim()) {
+      try {
+        parsedMetrics = JSON.parse(resolvedSuccessMetrics) as Record<string, unknown>;
+      } catch {
+        setMetricsError("Success metrics must be valid JSON.");
+        return;
       }
-      const updated = (await response.json()) as Board;
-      router.push(`/boards/${updated.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setIsLoading(false);
     }
+
+    const payload: BoardUpdate = {
+      name: trimmedName,
+      slug: slugify(trimmedName),
+      gateway_id: resolvedGatewayId || null,
+      board_type: resolvedBoardType,
+      objective: resolvedObjective.trim() || null,
+      success_metrics: parsedMetrics,
+      target_date: resolvedTargetDate
+        ? new Date(resolvedTargetDate).toISOString()
+        : null,
+    };
+
+    updateBoardMutation.mutate({ boardId, data: payload });
   };
 
   return (
@@ -249,7 +227,7 @@ export default function EditBoardPage() {
             <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
               <div className="space-y-6">
                 <BoardGoalPanel
-                  board={board}
+                  board={baseBoard}
                   onStartOnboarding={() => setIsOnboardingOpen(true)}
                 />
                 <form
@@ -262,22 +240,22 @@ export default function EditBoardPage() {
                         Board name <span className="text-red-500">*</span>
                       </label>
                       <Input
-                        value={name}
+                        value={resolvedName}
                         onChange={(event) => setName(event.target.value)}
                         placeholder="Board name"
-                        disabled={isLoading || !board}
+                        disabled={isLoading || !baseBoard}
                       />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-slate-900">
                         Gateway <span className="text-red-500">*</span>
                       </label>
-                      <SearchableSelect
-                        ariaLabel="Select gateway"
-                        value={gatewayId}
-                        onValueChange={setGatewayId}
-                        options={gatewayOptions}
-                        placeholder="Select gateway"
+                        <SearchableSelect
+                          ariaLabel="Select gateway"
+                          value={displayGatewayId}
+                          onValueChange={setGatewayId}
+                          options={gatewayOptions}
+                          placeholder="Select gateway"
                         searchPlaceholder="Search gateways..."
                         emptyMessage="No gateways found."
                         triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
@@ -292,7 +270,7 @@ export default function EditBoardPage() {
                       <label className="text-sm font-medium text-slate-900">
                         Board type
                       </label>
-                      <Select value={boardType} onValueChange={setBoardType}>
+                      <Select value={resolvedBoardType} onValueChange={setBoardType}>
                         <SelectTrigger>
                           <SelectValue placeholder="Select board type" />
                         </SelectTrigger>
@@ -308,7 +286,7 @@ export default function EditBoardPage() {
                       </label>
                       <Input
                         type="date"
-                        value={targetDate}
+                        value={resolvedTargetDate}
                         onChange={(event) => setTargetDate(event.target.value)}
                         disabled={isLoading}
                       />
@@ -320,7 +298,7 @@ export default function EditBoardPage() {
                       Objective
                     </label>
                     <Textarea
-                      value={objective}
+                      value={resolvedObjective}
                       onChange={(event) => setObjective(event.target.value)}
                       placeholder="What should this board achieve?"
                       className="min-h-[120px]"
@@ -333,7 +311,7 @@ export default function EditBoardPage() {
                       Success metrics (JSON)
                     </label>
                     <Textarea
-                      value={successMetrics}
+                      value={resolvedSuccessMetrics}
                       onChange={(event) => setSuccessMetrics(event.target.value)}
                       placeholder='e.g. { "target": "Launch by week 2" }'
                       className="min-h-[140px] font-mono text-xs"
@@ -353,7 +331,9 @@ export default function EditBoardPage() {
                     </div>
                   ) : null}
 
-                  {error ? <p className="text-sm text-red-500">{error}</p> : null}
+                  {errorMessage ? (
+                    <p className="text-sm text-red-500">{errorMessage}</p>
+                  ) : null}
 
                   <div className="flex justify-end gap-3">
                     <Button
@@ -364,7 +344,7 @@ export default function EditBoardPage() {
                     >
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={isLoading || !board || !isFormReady}>
+                    <Button type="submit" disabled={isLoading || !baseBoard || !isFormReady}>
                       {isLoading ? "Saving…" : "Save changes"}
                     </Button>
                   </div>

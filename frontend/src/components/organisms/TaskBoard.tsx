@@ -5,10 +5,12 @@ import { useMemo, useState } from "react";
 import { TaskCard } from "@/components/molecules/TaskCard";
 import { cn } from "@/lib/utils";
 
+type TaskStatus = "inbox" | "in_progress" | "review" | "done";
+
 type Task = {
   id: string;
   title: string;
-  status: string;
+  status: TaskStatus;
   priority: string;
   description?: string | null;
   due_at?: string | null;
@@ -20,10 +22,17 @@ type Task = {
 type TaskBoardProps = {
   tasks: Task[];
   onTaskSelect?: (task: Task) => void;
-  onTaskMove?: (taskId: string, status: string) => void;
+  onTaskMove?: (taskId: string, status: TaskStatus) => void | Promise<void>;
 };
 
-const columns = [
+const columns: Array<{
+  title: string;
+  status: TaskStatus;
+  dot: string;
+  accent: string;
+  text: string;
+  badge: string;
+}> = [
   {
     title: "Inbox",
     status: "inbox",
@@ -74,10 +83,15 @@ export function TaskBoard({
   onTaskMove,
 }: TaskBoardProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [activeColumn, setActiveColumn] = useState<string | null>(null);
+  const [activeColumn, setActiveColumn] = useState<TaskStatus | null>(null);
 
   const grouped = useMemo(() => {
-    const buckets: Record<string, Task[]> = {};
+    const buckets: Record<TaskStatus, Task[]> = {
+      inbox: [],
+      in_progress: [],
+      review: [],
+      done: [],
+    };
     for (const column of columns) {
       buckets[column.status] = [];
     }
@@ -104,7 +118,7 @@ export function TaskBoard({
   };
 
   const handleDrop =
-    (status: string) => (event: React.DragEvent<HTMLDivElement>) => {
+    (status: TaskStatus) => (event: React.DragEvent<HTMLDivElement>) => {
       event.preventDefault();
       setActiveColumn(null);
       const raw = event.dataTransfer.getData("text/plain");
@@ -120,14 +134,14 @@ export function TaskBoard({
     };
 
   const handleDragOver =
-    (status: string) => (event: React.DragEvent<HTMLDivElement>) => {
+    (status: TaskStatus) => (event: React.DragEvent<HTMLDivElement>) => {
       event.preventDefault();
       if (activeColumn !== status) {
         setActiveColumn(status);
       }
     };
 
-  const handleDragLeave = (status: string) => () => {
+  const handleDragLeave = (status: TaskStatus) => () => {
       if (activeColumn === status) {
         setActiveColumn(null);
       }

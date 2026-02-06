@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, Literal, Self
 from uuid import UUID
 
+from pydantic import field_validator, model_validator
 from sqlmodel import SQLModel
+
+from app.schemas.common import NonEmptyStr
+
+
+TaskStatus = Literal["inbox", "in_progress", "review", "done"]
 
 
 class TaskBase(SQLModel):
     title: str
     description: str | None = None
-    status: str = "inbox"
+    status: TaskStatus = "inbox"
     priority: str = "medium"
     due_at: datetime | None = None
     assigned_agent_id: UUID | None = None
@@ -22,11 +29,26 @@ class TaskCreate(TaskBase):
 class TaskUpdate(SQLModel):
     title: str | None = None
     description: str | None = None
-    status: str | None = None
+    status: TaskStatus | None = None
     priority: str | None = None
     due_at: datetime | None = None
     assigned_agent_id: UUID | None = None
-    comment: str | None = None
+    comment: NonEmptyStr | None = None
+
+    @field_validator("comment", mode="before")
+    @classmethod
+    def normalize_comment(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def validate_status(self) -> Self:
+        if "status" in self.model_fields_set and self.status is None:
+            raise ValueError("status is required")
+        return self
 
 
 class TaskRead(TaskBase):
@@ -39,7 +61,7 @@ class TaskRead(TaskBase):
 
 
 class TaskCommentCreate(SQLModel):
-    message: str
+    message: NonEmptyStr
 
 
 class TaskCommentRead(SQLModel):

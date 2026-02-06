@@ -5,10 +5,15 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AgentUpdateHeartbeatConfig } from "./agentUpdateHeartbeatConfig";
+import type { AgentUpdateIdentityProfile } from "./agentUpdateIdentityProfile";
 
 export interface AgentUpdate {
   board_id?: string | null;
+  is_gateway_main?: boolean | null;
   name?: string | null;
   status?: string | null;
   heartbeat_config?: AgentUpdateHeartbeatConfig;
+  identity_profile?: AgentUpdateIdentityProfile;
+  identity_template?: string | null;
+  soul_template?: string | null;
 }

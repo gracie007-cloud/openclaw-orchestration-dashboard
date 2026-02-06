@@ -3,19 +3,21 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import asc, or_, update
-from sqlmodel import Session, col, select
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
-from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import ActorContext, require_admin_auth, require_admin_or_agent
 from app.core.agent_tokens import generate_agent_token, hash_agent_token
 from app.core.auth import AuthContext
-from app.db.session import engine, get_session
+from app.core.time import utcnow
+from app.db.session import async_session_maker, get_session
 from app.integrations.openclaw_gateway import GatewayConfig as GatewayClientConfig
 from app.integrations.openclaw_gateway import OpenClawGatewayError, ensure_session, send_message
 from app.models.activity_events import ActivityEvent
@@ -23,6 +25,7 @@ from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.tasks import Task
+from app.schemas.common import OkResponse
 from app.schemas.agents import (
     AgentCreate,
     AgentHeartbeat,
@@ -60,27 +63,6 @@ def _parse_since(value: str | None) -> datetime | None:
     return parsed
 
 
-def _normalize_identity_profile(
-    profile: dict[str, object] | None,
-) -> dict[str, str] | None:
-    if not profile:
-        return None
-    normalized: dict[str, str] = {}
-    for key, raw in profile.items():
-        if raw is None:
-            continue
-        if isinstance(raw, list):
-            parts = [str(item).strip() for item in raw if str(item).strip()]
-            if not parts:
-                continue
-            normalized[key] = ", ".join(parts)
-            continue
-        value = str(raw).strip()
-        if value:
-            normalized[key] = value
-    return normalized or None
-
-
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or uuid4().hex
@@ -100,25 +82,25 @@ def _workspace_path(agent_name: str, workspace_root: str | None) -> str:
     return f"{root}/workspace-{_slugify(agent_name)}"
 
 
-def _require_board(session: Session, board_id: UUID | str | None) -> Board:
+async def _require_board(session: AsyncSession, board_id: UUID | str | None) -> Board:
     if not board_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="board_id is required",
         )
-    board = session.get(Board, board_id)
+    board = await session.get(Board, board_id)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
     return board
 
 
-def _require_gateway(session: Session, board: Board) -> tuple[Gateway, GatewayClientConfig]:
+async def _require_gateway(session: AsyncSession, board: Board) -> tuple[Gateway, GatewayClientConfig]:
     if not board.gateway_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Board gateway_id is required",
         )
-    gateway = session.get(Gateway, board.gateway_id)
+    gateway = await session.get(Gateway, board.gateway_id)
     if gateway is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -151,8 +133,8 @@ def _gateway_client_config(gateway: Gateway) -> GatewayClientConfig:
     return GatewayClientConfig(url=gateway.url, token=gateway.token)
 
 
-def _get_gateway_main_session_keys(session: Session) -> set[str]:
-    keys = session.exec(select(Gateway.main_session_key)).all()
+async def _get_gateway_main_session_keys(session: AsyncSession) -> set[str]:
+    keys = (await session.exec(select(Gateway.main_session_key))).all()
     return {key for key in keys if key}
 
 
@@ -165,10 +147,12 @@ def _to_agent_read(agent: Agent, main_session_keys: set[str]) -> AgentRead:
     return model.model_copy(update={"is_gateway_main": _is_gateway_main(agent, main_session_keys)})
 
 
-def _find_gateway_for_main_session(session: Session, session_key: str | None) -> Gateway | None:
+async def _find_gateway_for_main_session(
+    session: AsyncSession, session_key: str | None
+) -> Gateway | None:
     if not session_key:
         return None
-    return session.exec(select(Gateway).where(Gateway.main_session_key == session_key)).first()
+    return (await session.exec(select(Gateway).where(Gateway.main_session_key == session_key))).first()
 
 
 async def _ensure_gateway_session(
@@ -184,7 +168,7 @@ async def _ensure_gateway_session(
 
 
 def _with_computed_status(agent: Agent) -> Agent:
-    now = datetime.utcnow()
+    now = utcnow()
     if agent.status in {"deleting", "updating"}:
         return agent
     if agent.last_seen_at is None:
@@ -198,24 +182,24 @@ def _serialize_agent(agent: Agent, main_session_keys: set[str]) -> dict[str, obj
     return _to_agent_read(_with_computed_status(agent), main_session_keys).model_dump(mode="json")
 
 
-def _fetch_agent_events(
+async def _fetch_agent_events(
+    session: AsyncSession,
     board_id: UUID | None,
     since: datetime,
 ) -> list[Agent]:
-    with Session(engine) as session:
-        statement = select(Agent)
-        if board_id:
-            statement = statement.where(col(Agent.board_id) == board_id)
-        statement = statement.where(
-            or_(
-                col(Agent.updated_at) >= since,
-                col(Agent.last_seen_at) >= since,
-            )
-        ).order_by(asc(col(Agent.updated_at)))
-        return list(session.exec(statement))
+    statement = select(Agent)
+    if board_id:
+        statement = statement.where(col(Agent.board_id) == board_id)
+    statement = statement.where(
+        or_(
+            col(Agent.updated_at) >= since,
+            col(Agent.last_seen_at) >= since,
+        )
+    ).order_by(asc(col(Agent.updated_at)))
+    return list(await session.exec(statement))
 
 
-def _record_heartbeat(session: Session, agent: Agent) -> None:
+def _record_heartbeat(session: AsyncSession, agent: Agent) -> None:
     record_activity(
         session,
         event_type="agent.heartbeat",
@@ -224,7 +208,7 @@ def _record_heartbeat(session: Session, agent: Agent) -> None:
     )
 
 
-def _record_instruction_failure(session: Session, agent: Agent, error: str, action: str) -> None:
+def _record_instruction_failure(session: AsyncSession, agent: Agent, error: str, action: str) -> None:
     action_label = action.replace("_", " ").capitalize()
     record_activity(
         session,
@@ -248,12 +232,12 @@ async def _send_wakeup_message(
 
 
 @router.get("", response_model=list[AgentRead])
-def list_agents(
-    session: Session = Depends(get_session),
+async def list_agents(
+    session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
-) -> list[Agent]:
-    agents = list(session.exec(select(Agent)))
-    main_session_keys = _get_gateway_main_session_keys(session)
+) -> list[AgentRead]:
+    agents = list(await session.exec(select(Agent)))
+    main_session_keys = await _get_gateway_main_session_keys(session)
     return [_to_agent_read(_with_computed_status(agent), main_session_keys) for agent in agents]
 
 
@@ -264,24 +248,23 @@ async def stream_agents(
     since: str | None = Query(default=None),
     auth: AuthContext = Depends(require_admin_auth),
 ) -> EventSourceResponse:
-    since_dt = _parse_since(since) or datetime.utcnow()
+    since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
-    async def event_generator():
+    async def event_generator() -> AsyncIterator[dict[str, str]]:
         nonlocal last_seen
         while True:
             if await request.is_disconnected():
                 break
-            agents = await run_in_threadpool(_fetch_agent_events, board_id, last_seen)
-            if agents:
-                with Session(engine) as session:
-                    main_session_keys = _get_gateway_main_session_keys(session)
-                    for agent in agents:
-                        updated_at = agent.updated_at or agent.last_seen_at or datetime.utcnow()
-                        if updated_at > last_seen:
-                            last_seen = updated_at
-                        payload = {"agent": _serialize_agent(agent, main_session_keys)}
-                        yield {"event": "agent", "data": json.dumps(payload)}
+            async with async_session_maker() as session:
+                agents = await _fetch_agent_events(session, board_id, last_seen)
+                main_session_keys = await _get_gateway_main_session_keys(session) if agents else set()
+            for agent in agents:
+                updated_at = agent.updated_at or agent.last_seen_at or utcnow()
+                if updated_at > last_seen:
+                    last_seen = updated_at
+                payload = {"agent": _serialize_agent(agent, main_session_keys)}
+                yield {"event": "agent", "data": json.dumps(payload)}
             await asyncio.sleep(2)
 
     return EventSourceResponse(event_generator(), ping=15)
@@ -290,9 +273,9 @@ async def stream_agents(
 @router.post("", response_model=AgentRead)
 async def create_agent(
     payload: AgentCreate,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
-) -> Agent:
+) -> AgentRead:
     if actor.actor_type == "agent":
         if not actor.agent or not actor.agent.is_board_lead:
             raise HTTPException(
@@ -311,39 +294,36 @@ async def create_agent(
             )
         payload = AgentCreate(**{**payload.model_dump(), "board_id": actor.agent.board_id})
 
-    board = _require_board(session, payload.board_id)
-    gateway, client_config = _require_gateway(session, board)
+    board = await _require_board(session, payload.board_id)
+    gateway, client_config = await _require_gateway(session, board)
     data = payload.model_dump()
     requested_name = (data.get("name") or "").strip()
     if requested_name:
-        existing = session.exec(
-            select(Agent)
-            .where(Agent.board_id == board.id)
-            .where(col(Agent.name).ilike(requested_name))
+        existing = (
+            await session.exec(
+                select(Agent)
+                .where(Agent.board_id == board.id)
+                .where(col(Agent.name).ilike(requested_name))
+            )
         ).first()
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An agent with this name already exists on this board.",
             )
-    if data.get("identity_template") == "":
-        data["identity_template"] = None
-    if data.get("soul_template") == "":
-        data["soul_template"] = None
-    data["identity_profile"] = _normalize_identity_profile(data.get("identity_profile"))
     agent = Agent.model_validate(data)
     agent.status = "provisioning"
     raw_token = generate_agent_token()
     agent.agent_token_hash = hash_agent_token(raw_token)
     if agent.heartbeat_config is None:
         agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
-    agent.provision_requested_at = datetime.utcnow()
+    agent.provision_requested_at = utcnow()
     agent.provision_action = "provision"
     session_key, session_error = await _ensure_gateway_session(agent.name, client_config)
     agent.openclaw_session_id = session_key
     session.add(agent)
-    session.commit()
-    session.refresh(agent)
+    await session.commit()
+    await session.refresh(agent)
     if session_error:
         record_activity(
             session,
@@ -358,7 +338,7 @@ async def create_agent(
             message=f"Session created for {agent.name}.",
             agent_id=agent.id,
         )
-    session.commit()
+    await session.commit()
     try:
         await provision_agent(
             agent,
@@ -372,9 +352,9 @@ async def create_agent(
         agent.provision_confirm_token_hash = None
         agent.provision_requested_at = None
         agent.provision_action = None
-        agent.updated_at = datetime.utcnow()
+        agent.updated_at = utcnow()
         session.add(agent)
-        session.commit()
+        await session.commit()
         record_activity(
             session,
             event_type="agent.provision",
@@ -387,26 +367,27 @@ async def create_agent(
             message=f"Wakeup message sent to {agent.name}.",
             agent_id=agent.id,
         )
-        session.commit()
+        await session.commit()
     except OpenClawGatewayError as exc:
         _record_instruction_failure(session, agent, str(exc), "provision")
-        session.commit()
+        await session.commit()
     except Exception as exc:  # pragma: no cover - unexpected provisioning errors
         _record_instruction_failure(session, agent, str(exc), "provision")
-        session.commit()
-    return agent
+        await session.commit()
+    main_session_keys = await _get_gateway_main_session_keys(session)
+    return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
 @router.get("/{agent_id}", response_model=AgentRead)
-def get_agent(
+async def get_agent(
     agent_id: str,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
-) -> Agent:
-    agent = session.get(Agent, agent_id)
+) -> AgentRead:
+    agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    main_session_keys = _get_gateway_main_session_keys(session)
+    main_session_keys = await _get_gateway_main_session_keys(session)
     return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
@@ -415,10 +396,10 @@ async def update_agent(
     agent_id: str,
     payload: AgentUpdate,
     force: bool = False,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
-) -> Agent:
-    agent = session.get(Agent, agent_id)
+) -> AgentRead:
+    agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     updates = payload.model_dump(exclude_unset=True)
@@ -428,21 +409,15 @@ async def update_agent(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="status is controlled by agent heartbeat",
         )
-    if updates.get("identity_template") == "":
-        updates["identity_template"] = None
-    if updates.get("soul_template") == "":
-        updates["soul_template"] = None
-    if "identity_profile" in updates:
-        updates["identity_profile"] = _normalize_identity_profile(updates.get("identity_profile"))
     if not updates and not force and make_main is None:
-        main_session_keys = _get_gateway_main_session_keys(session)
+        main_session_keys = await _get_gateway_main_session_keys(session)
         return _to_agent_read(_with_computed_status(agent), main_session_keys)
-    main_gateway = _find_gateway_for_main_session(session, agent.openclaw_session_id)
+    main_gateway = await _find_gateway_for_main_session(session, agent.openclaw_session_id)
     gateway_for_main: Gateway | None = None
     if make_main is True:
         board_source = updates.get("board_id") or agent.board_id
-        board_for_main = _require_board(session, board_source)
-        gateway_for_main, _ = _require_gateway(session, board_for_main)
+        board_for_main = await _require_board(session, board_source)
+        gateway_for_main, _ = await _require_gateway(session, board_for_main)
         updates["board_id"] = None
         agent.is_board_lead = False
         agent.openclaw_session_id = gateway_for_main.main_session_key
@@ -450,18 +425,18 @@ async def update_agent(
     elif make_main is False:
         agent.openclaw_session_id = None
     if make_main is not True and "board_id" in updates:
-        _require_board(session, updates["board_id"])
+        await _require_board(session, updates["board_id"])
     for key, value in updates.items():
         setattr(agent, key, value)
     if make_main is None and main_gateway is not None:
         agent.board_id = None
         agent.is_board_lead = False
-    agent.updated_at = datetime.utcnow()
+    agent.updated_at = utcnow()
     if agent.heartbeat_config is None:
         agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
     session.add(agent)
-    session.commit()
-    session.refresh(agent)
+    await session.commit()
+    await session.refresh(agent)
     is_main_agent = False
     board: Board | None = None
     gateway: Gateway | None = None
@@ -490,8 +465,8 @@ async def update_agent(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="board_id is required for non-main agents",
             )
-        board = _require_board(session, agent.board_id)
-        gateway, client_config = _require_gateway(session, board)
+        board = await _require_board(session, agent.board_id)
+        gateway, client_config = await _require_gateway(session, board)
     session_key = agent.openclaw_session_id or _build_session_key(agent.name)
     try:
         if client_config is None:
@@ -503,19 +478,19 @@ async def update_agent(
         if not agent.openclaw_session_id:
             agent.openclaw_session_id = session_key
             session.add(agent)
-            session.commit()
-            session.refresh(agent)
+            await session.commit()
+            await session.refresh(agent)
     except OpenClawGatewayError as exc:
         _record_instruction_failure(session, agent, str(exc), "update")
-        session.commit()
+        await session.commit()
     raw_token = generate_agent_token()
     agent.agent_token_hash = hash_agent_token(raw_token)
-    agent.provision_requested_at = datetime.utcnow()
+    agent.provision_requested_at = utcnow()
     agent.provision_action = "update"
     agent.status = "updating"
     session.add(agent)
-    session.commit()
-    session.refresh(agent)
+    await session.commit()
+    await session.refresh(agent)
     try:
         if gateway is None:
             raise HTTPException(
@@ -533,6 +508,11 @@ async def update_agent(
                 reset_session=True,
             )
         else:
+            if board is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="board is required for non-main agent provisioning",
+                )
             await provision_agent(
                 agent,
                 board,
@@ -548,9 +528,9 @@ async def update_agent(
         agent.provision_requested_at = None
         agent.provision_action = None
         agent.status = "online"
-        agent.updated_at = datetime.utcnow()
+        agent.updated_at = utcnow()
         session.add(agent)
-        session.commit()
+        await session.commit()
         record_activity(
             session,
             event_type="agent.update.direct",
@@ -563,33 +543,33 @@ async def update_agent(
             message=f"Wakeup message sent to {agent.name}.",
             agent_id=agent.id,
         )
-        session.commit()
+        await session.commit()
     except OpenClawGatewayError as exc:
         _record_instruction_failure(session, agent, str(exc), "update")
-        session.commit()
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Gateway update failed: {exc}",
         ) from exc
     except Exception as exc:  # pragma: no cover - unexpected provisioning errors
         _record_instruction_failure(session, agent, str(exc), "update")
-        session.commit()
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unexpected error updating agent provisioning.",
         ) from exc
-    main_session_keys = _get_gateway_main_session_keys(session)
+    main_session_keys = await _get_gateway_main_session_keys(session)
     return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
 @router.post("/{agent_id}/heartbeat", response_model=AgentRead)
-def heartbeat_agent(
+async def heartbeat_agent(
     agent_id: str,
     payload: AgentHeartbeat,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> AgentRead:
-    agent = session.get(Agent, agent_id)
+    agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if actor.actor_type == "agent" and actor.agent and actor.agent.id != agent.id:
@@ -598,25 +578,25 @@ def heartbeat_agent(
         agent.status = payload.status
     elif agent.status == "provisioning":
         agent.status = "online"
-    agent.last_seen_at = datetime.utcnow()
-    agent.updated_at = datetime.utcnow()
+    agent.last_seen_at = utcnow()
+    agent.updated_at = utcnow()
     _record_heartbeat(session, agent)
     session.add(agent)
-    session.commit()
-    session.refresh(agent)
-    main_session_keys = _get_gateway_main_session_keys(session)
+    await session.commit()
+    await session.refresh(agent)
+    main_session_keys = await _get_gateway_main_session_keys(session)
     return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
 @router.post("/heartbeat", response_model=AgentRead)
 async def heartbeat_or_create_agent(
     payload: AgentHeartbeatCreate,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> AgentRead:
     # Agent tokens must heartbeat their authenticated agent record. Names are not unique.
     if actor.actor_type == "agent" and actor.agent:
-        return heartbeat_agent(
+        return await heartbeat_agent(
             agent_id=str(actor.agent.id),
             payload=AgentHeartbeat(status=payload.status),
             session=session,
@@ -626,12 +606,12 @@ async def heartbeat_or_create_agent(
     statement = select(Agent).where(Agent.name == payload.name)
     if payload.board_id is not None:
         statement = statement.where(Agent.board_id == payload.board_id)
-    agent = session.exec(statement).first()
+    agent = (await session.exec(statement)).first()
     if agent is None:
         if actor.actor_type == "agent":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-        board = _require_board(session, payload.board_id)
-        gateway, client_config = _require_gateway(session, board)
+        board = await _require_board(session, payload.board_id)
+        gateway, client_config = await _require_gateway(session, board)
         agent = Agent(
             name=payload.name,
             status="provisioning",
@@ -640,13 +620,13 @@ async def heartbeat_or_create_agent(
         )
         raw_token = generate_agent_token()
         agent.agent_token_hash = hash_agent_token(raw_token)
-        agent.provision_requested_at = datetime.utcnow()
+        agent.provision_requested_at = utcnow()
         agent.provision_action = "provision"
         session_key, session_error = await _ensure_gateway_session(agent.name, client_config)
         agent.openclaw_session_id = session_key
         session.add(agent)
-        session.commit()
-        session.refresh(agent)
+        await session.commit()
+        await session.refresh(agent)
         if session_error:
             record_activity(
                 session,
@@ -661,16 +641,16 @@ async def heartbeat_or_create_agent(
                 message=f"Session created for {agent.name}.",
                 agent_id=agent.id,
             )
-        session.commit()
+        await session.commit()
         try:
             await provision_agent(agent, board, gateway, raw_token, actor.user, action="provision")
             await _send_wakeup_message(agent, client_config, verb="provisioned")
             agent.provision_confirm_token_hash = None
             agent.provision_requested_at = None
             agent.provision_action = None
-            agent.updated_at = datetime.utcnow()
+            agent.updated_at = utcnow()
             session.add(agent)
-            session.commit()
+            await session.commit()
             record_activity(
                 session,
                 event_type="agent.provision",
@@ -683,13 +663,13 @@ async def heartbeat_or_create_agent(
                 message=f"Wakeup message sent to {agent.name}.",
                 agent_id=agent.id,
             )
-            session.commit()
+            await session.commit()
         except OpenClawGatewayError as exc:
             _record_instruction_failure(session, agent, str(exc), "provision")
-            session.commit()
+            await session.commit()
         except Exception as exc:  # pragma: no cover - unexpected provisioning errors
             _record_instruction_failure(session, agent, str(exc), "provision")
-            session.commit()
+            await session.commit()
     elif actor.actor_type == "agent" and actor.agent and actor.agent.id != agent.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     elif agent.agent_token_hash is None and actor.actor_type == "user":
@@ -697,22 +677,22 @@ async def heartbeat_or_create_agent(
         agent.agent_token_hash = hash_agent_token(raw_token)
         if agent.heartbeat_config is None:
             agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
-        agent.provision_requested_at = datetime.utcnow()
+        agent.provision_requested_at = utcnow()
         agent.provision_action = "provision"
         session.add(agent)
-        session.commit()
-        session.refresh(agent)
+        await session.commit()
+        await session.refresh(agent)
         try:
-            board = _require_board(session, str(agent.board_id) if agent.board_id else None)
-            gateway, client_config = _require_gateway(session, board)
+            board = await _require_board(session, str(agent.board_id) if agent.board_id else None)
+            gateway, client_config = await _require_gateway(session, board)
             await provision_agent(agent, board, gateway, raw_token, actor.user, action="provision")
             await _send_wakeup_message(agent, client_config, verb="provisioned")
             agent.provision_confirm_token_hash = None
             agent.provision_requested_at = None
             agent.provision_action = None
-            agent.updated_at = datetime.utcnow()
+            agent.updated_at = utcnow()
             session.add(agent)
-            session.commit()
+            await session.commit()
             record_activity(
                 session,
                 event_type="agent.provision",
@@ -725,16 +705,16 @@ async def heartbeat_or_create_agent(
                 message=f"Wakeup message sent to {agent.name}.",
                 agent_id=agent.id,
             )
-            session.commit()
+            await session.commit()
         except OpenClawGatewayError as exc:
             _record_instruction_failure(session, agent, str(exc), "provision")
-            session.commit()
+            await session.commit()
         except Exception as exc:  # pragma: no cover - unexpected provisioning errors
             _record_instruction_failure(session, agent, str(exc), "provision")
-            session.commit()
+            await session.commit()
     elif not agent.openclaw_session_id:
-        board = _require_board(session, str(agent.board_id) if agent.board_id else None)
-        gateway, client_config = _require_gateway(session, board)
+        board = await _require_board(session, str(agent.board_id) if agent.board_id else None)
+        gateway, client_config = await _require_gateway(session, board)
         session_key, session_error = await _ensure_gateway_session(agent.name, client_config)
         agent.openclaw_session_id = session_key
         if session_error:
@@ -751,47 +731,45 @@ async def heartbeat_or_create_agent(
                 message=f"Session created for {agent.name}.",
                 agent_id=agent.id,
             )
-        session.commit()
+        await session.commit()
     if payload.status:
         agent.status = payload.status
     elif agent.status == "provisioning":
         agent.status = "online"
-    agent.last_seen_at = datetime.utcnow()
-    agent.updated_at = datetime.utcnow()
+    agent.last_seen_at = utcnow()
+    agent.updated_at = utcnow()
     _record_heartbeat(session, agent)
     session.add(agent)
-    session.commit()
-    session.refresh(agent)
-    main_session_keys = _get_gateway_main_session_keys(session)
+    await session.commit()
+    await session.refresh(agent)
+    main_session_keys = await _get_gateway_main_session_keys(session)
     return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
-@router.delete("/{agent_id}")
-def delete_agent(
+@router.delete("/{agent_id}", response_model=OkResponse)
+async def delete_agent(
     agent_id: str,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
-) -> dict[str, bool]:
-    agent = session.get(Agent, agent_id)
+) -> OkResponse:
+    agent = await session.get(Agent, agent_id)
     if agent is None:
-        return {"ok": True}
+        return OkResponse()
 
-    board = _require_board(session, str(agent.board_id) if agent.board_id else None)
-    gateway, client_config = _require_gateway(session, board)
+    board = await _require_board(session, str(agent.board_id) if agent.board_id else None)
+    gateway, client_config = await _require_gateway(session, board)
     try:
-        import asyncio
-
-        workspace_path = asyncio.run(cleanup_agent(agent, gateway))
+        workspace_path = await cleanup_agent(agent, gateway)
     except OpenClawGatewayError as exc:
         _record_instruction_failure(session, agent, str(exc), "delete")
-        session.commit()
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Gateway cleanup failed: {exc}",
         ) from exc
     except Exception as exc:  # pragma: no cover - unexpected cleanup errors
         _record_instruction_failure(session, agent, str(exc), "delete")
-        session.commit()
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Workspace cleanup failed: {exc}",
@@ -804,7 +782,7 @@ def delete_agent(
         agent_id=None,
     )
     now = datetime.now()
-    session.execute(
+    await session.execute(
         update(Task)
         .where(col(Task.assigned_agent_id) == agent.id)
         .where(col(Task.status) == "in_progress")
@@ -815,7 +793,7 @@ def delete_agent(
             updated_at=now,
         )
     )
-    session.execute(
+    await session.execute(
         update(Task)
         .where(col(Task.assigned_agent_id) == agent.id)
         .where(col(Task.status) != "in_progress")
@@ -824,11 +802,11 @@ def delete_agent(
             updated_at=now,
         )
     )
-    session.execute(
+    await session.execute(
         update(ActivityEvent).where(col(ActivityEvent.agent_id) == agent.id).values(agent_id=None)
     )
-    session.delete(agent)
-    session.commit()
+    await session.delete(agent)
+    await session.commit()
 
     # Always ask the main agent to confirm workspace cleanup.
     try:
@@ -843,20 +821,14 @@ def delete_agent(
                 "1) Remove the workspace directory.\n"
                 "2) Reply NO_REPLY.\n"
             )
-
-            async def _request_cleanup() -> None:
-                await ensure_session(main_session, config=client_config, label="Main Agent")
-                await send_message(
-                    cleanup_message,
-                    session_key=main_session,
-                    config=client_config,
-                    deliver=False,
-                )
-
-            import asyncio
-
-            asyncio.run(_request_cleanup())
+            await ensure_session(main_session, config=client_config, label="Main Agent")
+            await send_message(
+                cleanup_message,
+                session_key=main_session,
+                config=client_config,
+                deliver=False,
+            )
     except Exception:
         # Cleanup request is best-effort; deletion already completed.
         pass
-    return {"ok": True}
+    return OkResponse()

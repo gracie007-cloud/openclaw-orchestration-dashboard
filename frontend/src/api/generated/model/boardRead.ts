@@ -4,11 +4,18 @@
  * Mission Control API
  * OpenAPI spec version: 0.1.0
  */
+import type { BoardReadSuccessMetrics } from "./boardReadSuccessMetrics";
 
 export interface BoardRead {
   name: string;
   slug: string;
   gateway_id?: string | null;
+  board_type?: string;
+  objective?: string | null;
+  success_metrics?: BoardReadSuccessMetrics;
+  target_date?: string | null;
+  goal_confirmed?: boolean;
+  goal_source?: string | null;
   id: string;
   created_at: string;
   updated_at: string;

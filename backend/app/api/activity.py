@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import desc
-from sqlmodel import Session, col, select
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import ActorContext, require_admin_or_agent
 from app.db.session import get_session
@@ -13,14 +14,14 @@ router = APIRouter(prefix="/activity", tags=["activity"])
 
 
 @router.get("", response_model=list[ActivityEventRead])
-def list_activity(
+async def list_activity(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> list[ActivityEvent]:
     statement = select(ActivityEvent)
     if actor.actor_type == "agent" and actor.agent:
         statement = statement.where(ActivityEvent.agent_id == actor.agent.id)
     statement = statement.order_by(desc(col(ActivityEvent.created_at))).offset(offset).limit(limit)
-    return list(session.exec(statement))
+    return list(await session.exec(statement))

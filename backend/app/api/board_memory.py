@@ -3,20 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlmodel import Session, col, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
-from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import ActorContext, get_board_or_404, require_admin_or_agent
 from app.core.config import settings
-from app.db.session import engine, get_session
+from app.core.time import utcnow
+from app.db.session import async_session_maker, get_session
 from app.integrations.openclaw_gateway import GatewayConfig as GatewayClientConfig
 from app.integrations.openclaw_gateway import OpenClawGatewayError, ensure_session, send_message
 from app.models.agents import Agent
 from app.models.board_memory import BoardMemory
+from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.schemas.board_memory import BoardMemoryCreate, BoardMemoryRead
 
@@ -62,10 +66,10 @@ def _matches_mention(agent: Agent, mentions: set[str]) -> bool:
     return first in mentions
 
 
-def _gateway_config(session: Session, board) -> GatewayClientConfig | None:
-    if not board.gateway_id:
+async def _gateway_config(session: AsyncSession, board: Board) -> GatewayClientConfig | None:
+    if board.gateway_id is None:
         return None
-    gateway = session.get(Gateway, board.gateway_id)
+    gateway = await session.get(Gateway, board.gateway_id)
     if gateway is None or not gateway.url:
         return None
     return GatewayClientConfig(url=gateway.url, token=gateway.token)
@@ -82,36 +86,36 @@ async def _send_agent_message(
     await send_message(message, session_key=session_key, config=config, deliver=False)
 
 
-def _fetch_memory_events(
-    board_id,
+async def _fetch_memory_events(
+    session: AsyncSession,
+    board_id: UUID,
     since: datetime,
 ) -> list[BoardMemory]:
-    with Session(engine) as session:
-        statement = (
-            select(BoardMemory)
-            .where(col(BoardMemory.board_id) == board_id)
-            .where(col(BoardMemory.created_at) >= since)
-            .order_by(col(BoardMemory.created_at))
-        )
-        return list(session.exec(statement))
+    statement = (
+        select(BoardMemory)
+        .where(col(BoardMemory.board_id) == board_id)
+        .where(col(BoardMemory.created_at) >= since)
+        .order_by(col(BoardMemory.created_at))
+    )
+    return list(await session.exec(statement))
 
 
-def _notify_chat_targets(
+async def _notify_chat_targets(
     *,
-    session: Session,
-    board,
+    session: AsyncSession,
+    board: Board,
     memory: BoardMemory,
     actor: ActorContext,
 ) -> None:
     if not memory.content:
         return
-    config = _gateway_config(session, board)
+    config = await _gateway_config(session, board)
     if config is None:
         return
     mentions = _extract_mentions(memory.content)
     statement = select(Agent).where(col(Agent.board_id) == board.id)
     targets: dict[str, Agent] = {}
-    for agent in session.exec(statement):
+    for agent in await session.exec(statement):
         if agent.is_board_lead:
             targets[str(agent.id)] = agent
             continue
@@ -145,24 +149,22 @@ def _notify_chat_targets(
             'Body: {"content":"...","tags":["chat"]}'
         )
         try:
-            asyncio.run(
-                _send_agent_message(
-                    session_key=agent.openclaw_session_id,
-                    config=config,
-                    agent_name=agent.name,
-                    message=message,
-                )
+            await _send_agent_message(
+                session_key=agent.openclaw_session_id,
+                config=config,
+                agent_name=agent.name,
+                message=message,
             )
         except OpenClawGatewayError:
             continue
 
 
 @router.get("", response_model=list[BoardMemoryRead])
-def list_board_memory(
+async def list_board_memory(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    board=Depends(get_board_or_404),
-    session: Session = Depends(get_session),
+    board: Board = Depends(get_board_or_404),
+    session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> list[BoardMemory]:
     if actor.actor_type == "agent" and actor.agent:
@@ -175,28 +177,29 @@ def list_board_memory(
         .offset(offset)
         .limit(limit)
     )
-    return list(session.exec(statement))
+    return list(await session.exec(statement))
 
 
 @router.get("/stream")
 async def stream_board_memory(
     request: Request,
-    board=Depends(get_board_or_404),
+    board: Board = Depends(get_board_or_404),
     actor: ActorContext = Depends(require_admin_or_agent),
     since: str | None = Query(default=None),
 ) -> EventSourceResponse:
     if actor.actor_type == "agent" and actor.agent:
         if actor.agent.board_id and actor.agent.board_id != board.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    since_dt = _parse_since(since) or datetime.utcnow()
+    since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
-    async def event_generator():
+    async def event_generator() -> AsyncIterator[dict[str, str]]:
         nonlocal last_seen
         while True:
             if await request.is_disconnected():
                 break
-            memories = await run_in_threadpool(_fetch_memory_events, board.id, last_seen)
+            async with async_session_maker() as session:
+                memories = await _fetch_memory_events(session, board.id, last_seen)
             for memory in memories:
                 if memory.created_at > last_seen:
                     last_seen = memory.created_at
@@ -208,10 +211,10 @@ async def stream_board_memory(
 
 
 @router.post("", response_model=BoardMemoryRead)
-def create_board_memory(
+async def create_board_memory(
     payload: BoardMemoryCreate,
-    board=Depends(get_board_or_404),
-    session: Session = Depends(get_session),
+    board: Board = Depends(get_board_or_404),
+    session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> BoardMemory:
     if actor.actor_type == "agent" and actor.agent:
@@ -231,8 +234,8 @@ def create_board_memory(
         source=source,
     )
     session.add(memory)
-    session.commit()
-    session.refresh(memory)
+    await session.commit()
+    await session.refresh(memory)
     if is_chat:
-        _notify_chat_targets(session=session, board=board, memory=memory, actor=actor)
+        await _notify_chat_targets(session=session, board=board, memory=memory, actor=actor)
     return memory

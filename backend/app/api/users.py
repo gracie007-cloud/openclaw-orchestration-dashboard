@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.auth import AuthContext, get_auth_context
 from app.db.session import get_session
@@ -21,7 +21,7 @@ async def get_me(auth: AuthContext = Depends(get_auth_context)) -> UserRead:
 @router.patch("/me", response_model=UserRead)
 async def update_me(
     payload: UserUpdate,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
 ) -> UserRead:
     if auth.actor_type != "user" or auth.user is None:
@@ -31,6 +31,6 @@ async def update_me(
     for key, value in updates.items():
         setattr(user, key, value)
     session.add(user)
-    session.commit()
-    session.refresh(user)
+    await session.commit()
+    await session.refresh(user)
     return UserRead.model_validate(user)

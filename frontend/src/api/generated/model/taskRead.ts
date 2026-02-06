@@ -4,11 +4,12 @@
  * Mission Control API
  * OpenAPI spec version: 0.1.0
  */
+import type { TaskReadStatus } from "./taskReadStatus";
 
 export interface TaskRead {
   title: string;
   description?: string | null;
-  status?: string;
+  status?: TaskReadStatus;
   priority?: string;
   due_at?: string | null;
   assigned_agent_id?: string | null;

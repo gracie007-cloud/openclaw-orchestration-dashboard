@@ -6,10 +6,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import DateTime, case, cast, func
-from sqlmodel import Session, col, select
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_admin_auth
 from app.core.auth import AuthContext
+from app.core.time import utcnow
 from app.db.session import get_session
 from app.models.activity_events import ActivityEvent
 from app.models.agents import Agent
@@ -40,7 +42,7 @@ class RangeSpec:
 
 
 def _resolve_range(range_key: Literal["24h", "7d"]) -> RangeSpec:
-    now = datetime.utcnow()
+    now = utcnow()
     if range_key == "7d":
         return RangeSpec(
             key="7d",
@@ -111,7 +113,7 @@ def _wip_series_from_mapping(
     )
 
 
-def _query_throughput(session: Session, range_spec: RangeSpec) -> DashboardRangeSeries:
+async def _query_throughput(session: AsyncSession, range_spec: RangeSpec) -> DashboardRangeSeries:
     bucket_col = func.date_trunc(range_spec.bucket, Task.updated_at).label("bucket")
     statement = (
         select(bucket_col, func.count())
@@ -121,12 +123,12 @@ def _query_throughput(session: Session, range_spec: RangeSpec) -> DashboardRange
         .group_by(bucket_col)
         .order_by(bucket_col)
     )
-    results = session.exec(statement).all()
+    results = (await session.exec(statement)).all()
     mapping = {row[0]: float(row[1]) for row in results}
     return _series_from_mapping(range_spec, mapping)
 
 
-def _query_cycle_time(session: Session, range_spec: RangeSpec) -> DashboardRangeSeries:
+async def _query_cycle_time(session: AsyncSession, range_spec: RangeSpec) -> DashboardRangeSeries:
     bucket_col = func.date_trunc(range_spec.bucket, Task.updated_at).label("bucket")
     in_progress = cast(Task.in_progress_at, DateTime)
     duration_hours = func.extract("epoch", Task.updated_at - in_progress) / 3600.0
@@ -139,12 +141,12 @@ def _query_cycle_time(session: Session, range_spec: RangeSpec) -> DashboardRange
         .group_by(bucket_col)
         .order_by(bucket_col)
     )
-    results = session.exec(statement).all()
+    results = (await session.exec(statement)).all()
     mapping = {row[0]: float(row[1] or 0) for row in results}
     return _series_from_mapping(range_spec, mapping)
 
 
-def _query_error_rate(session: Session, range_spec: RangeSpec) -> DashboardRangeSeries:
+async def _query_error_rate(session: AsyncSession, range_spec: RangeSpec) -> DashboardRangeSeries:
     bucket_col = func.date_trunc(range_spec.bucket, ActivityEvent.created_at).label("bucket")
     error_case = case(
         (
@@ -160,7 +162,7 @@ def _query_error_rate(session: Session, range_spec: RangeSpec) -> DashboardRange
         .group_by(bucket_col)
         .order_by(bucket_col)
     )
-    results = session.exec(statement).all()
+    results = (await session.exec(statement)).all()
     mapping: dict[datetime, float] = {}
     for bucket, errors, total in results:
         total_count = float(total or 0)
@@ -170,7 +172,7 @@ def _query_error_rate(session: Session, range_spec: RangeSpec) -> DashboardRange
     return _series_from_mapping(range_spec, mapping)
 
 
-def _query_wip(session: Session, range_spec: RangeSpec) -> DashboardWipRangeSeries:
+async def _query_wip(session: AsyncSession, range_spec: RangeSpec) -> DashboardWipRangeSeries:
     bucket_col = func.date_trunc(range_spec.bucket, Task.updated_at).label("bucket")
     inbox_case = case((col(Task.status) == "inbox", 1), else_=0)
     progress_case = case((col(Task.status) == "in_progress", 1), else_=0)
@@ -187,7 +189,7 @@ def _query_wip(session: Session, range_spec: RangeSpec) -> DashboardWipRangeSeri
         .group_by(bucket_col)
         .order_by(bucket_col)
     )
-    results = session.exec(statement).all()
+    results = (await session.exec(statement)).all()
     mapping: dict[datetime, dict[str, int]] = {}
     for bucket, inbox, in_progress, review in results:
         mapping[bucket] = {
@@ -198,8 +200,8 @@ def _query_wip(session: Session, range_spec: RangeSpec) -> DashboardWipRangeSeri
     return _wip_series_from_mapping(range_spec, mapping)
 
 
-def _median_cycle_time_7d(session: Session) -> float | None:
-    now = datetime.utcnow()
+async def _median_cycle_time_7d(session: AsyncSession) -> float | None:
+    now = utcnow()
     start = now - timedelta(days=7)
     in_progress = cast(Task.in_progress_at, DateTime)
     duration_hours = func.extract("epoch", Task.updated_at - in_progress) / 3600.0
@@ -210,7 +212,7 @@ def _median_cycle_time_7d(session: Session) -> float | None:
         .where(col(Task.updated_at) >= start)
         .where(col(Task.updated_at) <= now)
     )
-    value = session.exec(statement).one_or_none()
+    value = (await session.exec(statement)).one_or_none()
     if value is None:
         return None
     if isinstance(value, tuple):
@@ -220,7 +222,7 @@ def _median_cycle_time_7d(session: Session) -> float | None:
     return float(value)
 
 
-def _error_rate_kpi(session: Session, range_spec: RangeSpec) -> float:
+async def _error_rate_kpi(session: AsyncSession, range_spec: RangeSpec) -> float:
     error_case = case(
         (
             col(ActivityEvent.event_type).like(ERROR_EVENT_PATTERN),
@@ -233,7 +235,7 @@ def _error_rate_kpi(session: Session, range_spec: RangeSpec) -> float:
         .where(col(ActivityEvent.created_at) >= range_spec.start)
         .where(col(ActivityEvent.created_at) <= range_spec.end)
     )
-    result = session.exec(statement).one_or_none()
+    result = (await session.exec(statement)).one_or_none()
     if result is None:
         return 0.0
     errors, total = result
@@ -242,58 +244,66 @@ def _error_rate_kpi(session: Session, range_spec: RangeSpec) -> float:
     return (error_count / total_count) * 100 if total_count > 0 else 0.0
 
 
-def _active_agents(session: Session) -> int:
-    threshold = datetime.utcnow() - OFFLINE_AFTER
+async def _active_agents(session: AsyncSession) -> int:
+    threshold = utcnow() - OFFLINE_AFTER
     statement = select(func.count()).where(
         col(Agent.last_seen_at).is_not(None),
         col(Agent.last_seen_at) >= threshold,
     )
-    result = session.exec(statement).one()
+    result = (await session.exec(statement)).one()
     return int(result)
 
 
-def _tasks_in_progress(session: Session) -> int:
+async def _tasks_in_progress(session: AsyncSession) -> int:
     statement = select(func.count()).where(col(Task.status) == "in_progress")
-    result = session.exec(statement).one()
+    result = (await session.exec(statement)).one()
     return int(result)
 
 
 @router.get("/dashboard", response_model=DashboardMetrics)
-def dashboard_metrics(
+async def dashboard_metrics(
     range: Literal["24h", "7d"] = Query(default="24h"),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
 ) -> DashboardMetrics:
     primary = _resolve_range(range)
     comparison = _comparison_range(range)
 
+    throughput_primary = await _query_throughput(session, primary)
+    throughput_comparison = await _query_throughput(session, comparison)
     throughput = DashboardSeriesSet(
-        primary=_query_throughput(session, primary),
-        comparison=_query_throughput(session, comparison),
+        primary=throughput_primary,
+        comparison=throughput_comparison,
     )
+    cycle_time_primary = await _query_cycle_time(session, primary)
+    cycle_time_comparison = await _query_cycle_time(session, comparison)
     cycle_time = DashboardSeriesSet(
-        primary=_query_cycle_time(session, primary),
-        comparison=_query_cycle_time(session, comparison),
+        primary=cycle_time_primary,
+        comparison=cycle_time_comparison,
     )
+    error_rate_primary = await _query_error_rate(session, primary)
+    error_rate_comparison = await _query_error_rate(session, comparison)
     error_rate = DashboardSeriesSet(
-        primary=_query_error_rate(session, primary),
-        comparison=_query_error_rate(session, comparison),
+        primary=error_rate_primary,
+        comparison=error_rate_comparison,
     )
+    wip_primary = await _query_wip(session, primary)
+    wip_comparison = await _query_wip(session, comparison)
     wip = DashboardWipSeriesSet(
-        primary=_query_wip(session, primary),
-        comparison=_query_wip(session, comparison),
+        primary=wip_primary,
+        comparison=wip_comparison,
     )
 
     kpis = DashboardKpis(
-        active_agents=_active_agents(session),
-        tasks_in_progress=_tasks_in_progress(session),
-        error_rate_pct=_error_rate_kpi(session, primary),
-        median_cycle_time_hours_7d=_median_cycle_time_7d(session),
+        active_agents=await _active_agents(session),
+        tasks_in_progress=await _tasks_in_progress(session),
+        error_rate_pct=await _error_rate_kpi(session, primary),
+        median_cycle_time_hours_7d=await _median_cycle_time_7d(session),
     )
 
     return DashboardMetrics(
         range=primary.key,
-        generated_at=datetime.utcnow(),
+        generated_at=utcnow(),
         kpis=kpis,
         throughput=throughput,
         cycle_time=cycle_time,

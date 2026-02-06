@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
@@ -240,7 +240,13 @@ async def _supported_gateway_files(config: GatewayClientConfig) -> set[str]:
         )
         if isinstance(files_payload, dict):
             files = files_payload.get("files") or []
-            supported = {item.get("name") for item in files if isinstance(item, dict)}
+            supported: set[str] = set()
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    supported.add(name)
             return supported or set(DEFAULT_GATEWAY_FILES)
     except OpenClawGatewayError:
         pass
@@ -260,11 +266,14 @@ async def _gateway_agent_files_index(
         payload = await openclaw_call("agents.files.list", {"agentId": agent_id}, config=config)
         if isinstance(payload, dict):
             files = payload.get("files") or []
-            return {
-                item.get("name"): item
-                for item in files
-                if isinstance(item, dict) and item.get("name")
-            }
+            index: dict[str, dict[str, Any]] = {}
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    index[name] = cast(dict[str, Any], item)
+            return index
     except OpenClawGatewayError:
         pass
     return {}
@@ -294,7 +303,7 @@ def _render_agent_files(
             continue
         if name == "HEARTBEAT.md":
             heartbeat_template = (
-                template_overrides.get(name)
+                template_overrides[name]
                 if template_overrides and name in template_overrides
                 else _heartbeat_template_name(agent)
             )
@@ -307,7 +316,7 @@ def _render_agent_files(
             rendered[name] = env.from_string(override).render(**context).strip()
             continue
         template_name = (
-            template_overrides.get(name)
+            template_overrides[name]
             if template_overrides and name in template_overrides
             else name
         )
@@ -329,13 +338,15 @@ async def _gateway_default_agent_id(
     if not isinstance(payload, dict):
         return None
     default_id = payload.get("defaultId") or payload.get("default_id")
-    if default_id:
+    if isinstance(default_id, str) and default_id:
         return default_id
     agents = payload.get("agents") or []
     if isinstance(agents, list) and agents:
         first = agents[0]
         if isinstance(first, dict):
-            return first.get("id")
+            agent_id = first.get("id")
+            if isinstance(agent_id, str) and agent_id:
+                return agent_id
     return None
 
 
@@ -539,7 +550,7 @@ async def cleanup_agent(
     gateway: Gateway,
 ) -> str | None:
     if not gateway.url:
-        return
+        return None
     if not gateway.workspace_root:
         raise ValueError("gateway_workspace_root is required")
     client_config = GatewayClientConfig(url=gateway.url, token=gateway.token)

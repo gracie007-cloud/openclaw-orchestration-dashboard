@@ -28,75 +28,71 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { getApiBaseUrl } from "@/lib/api-base";
+import { listAgentsApiV1AgentsGet, streamAgentsApiV1AgentsStreamGet } from "@/api/generated/agents/agents";
+import {
+  listApprovalsApiV1BoardsBoardIdApprovalsGet,
+  streamApprovalsApiV1BoardsBoardIdApprovalsStreamGet,
+  updateApprovalApiV1BoardsBoardIdApprovalsApprovalIdPatch,
+} from "@/api/generated/approvals/approvals";
+import { getBoardApiV1BoardsBoardIdGet } from "@/api/generated/boards/boards";
+import {
+  createBoardMemoryApiV1BoardsBoardIdMemoryPost,
+  listBoardMemoryApiV1BoardsBoardIdMemoryGet,
+  streamBoardMemoryApiV1BoardsBoardIdMemoryStreamGet,
+} from "@/api/generated/board-memory/board-memory";
+import {
+  createTaskApiV1BoardsBoardIdTasksPost,
+  createTaskCommentApiV1BoardsBoardIdTasksTaskIdCommentsPost,
+  deleteTaskApiV1BoardsBoardIdTasksTaskIdDelete,
+  listTaskCommentsApiV1BoardsBoardIdTasksTaskIdCommentsGet,
+  listTasksApiV1BoardsBoardIdTasksGet,
+  streamTasksApiV1BoardsBoardIdTasksStreamGet,
+  updateTaskApiV1BoardsBoardIdTasksTaskIdPatch,
+} from "@/api/generated/tasks/tasks";
+import type {
+  AgentRead,
+  ApprovalRead,
+  BoardMemoryRead,
+  BoardRead,
+  TaskCommentRead,
+  TaskRead,
+} from "@/api/generated/model";
 import { cn } from "@/lib/utils";
 
-type Board = {
-  id: string;
-  name: string;
-  slug: string;
-  board_type?: string;
-  objective?: string | null;
-  success_metrics?: Record<string, unknown> | null;
-  target_date?: string | null;
-  goal_confirmed?: boolean;
-};
+type Board = BoardRead;
 
-type Task = {
-  id: string;
-  title: string;
-  description?: string | null;
-  status: string;
+type TaskStatus = Exclude<TaskRead["status"], undefined>;
+
+type Task = TaskRead & {
+  status: TaskStatus;
   priority: string;
-  due_at?: string | null;
-  assigned_agent_id?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
   approvalsCount?: number;
   approvalsPendingCount?: number;
 };
 
-type Agent = {
-  id: string;
-  name: string;
-  status: string;
-  board_id?: string | null;
-  is_board_lead?: boolean;
-  updated_at?: string | null;
-  last_seen_at?: string | null;
-  identity_profile?: {
-    emoji?: string | null;
-  } | null;
-};
+type Agent = AgentRead & { status: string };
 
-type TaskComment = {
-  id: string;
-  message?: string | null;
-  agent_id?: string | null;
-  task_id?: string | null;
-  created_at: string;
-};
+type TaskComment = TaskCommentRead;
 
-type Approval = {
-  id: string;
-  action_type: string;
-  payload?: Record<string, unknown> | null;
-  confidence: number;
-  rubric_scores?: Record<string, number> | null;
-  status: string;
-  created_at: string;
-  resolved_at?: string | null;
-};
+type Approval = ApprovalRead & { status: string };
 
-type BoardChatMessage = {
-  id: string;
-  content: string;
-  tags?: string[] | null;
-  source?: string | null;
-  created_at: string;
-};
+type BoardChatMessage = BoardMemoryRead;
 
-const apiBase = getApiBaseUrl();
+const normalizeTask = (task: TaskRead): Task => ({
+  ...task,
+  status: task.status ?? "inbox",
+  priority: task.priority ?? "medium",
+});
+
+const normalizeAgent = (agent: AgentRead): Agent => ({
+  ...agent,
+  status: agent.status ?? "offline",
+});
+
+const normalizeApproval = (approval: ApprovalRead): Approval => ({
+  ...approval,
+  status: approval.status ?? "pending",
+});
 
 const approvalTaskId = (approval: Approval) => {
   const payload = approval.payload ?? {};
@@ -137,7 +133,7 @@ export default function BoardDetailPage() {
   const params = useParams();
   const boardIdParam = params?.boardId;
   const boardId = Array.isArray(boardIdParam) ? boardIdParam[0] : boardIdParam;
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
 
   const [board, setBoard] = useState<Board | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -195,7 +191,7 @@ export default function BoardDetailPage() {
 
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
-  const [editStatus, setEditStatus] = useState("inbox");
+  const [editStatus, setEditStatus] = useState<TaskStatus>("inbox");
   const [editPriority, setEditPriority] = useState("medium");
   const [editAssigneeId, setEditAssigneeId] = useState("");
   const [isSavingTask, setIsSavingTask] = useState(false);
@@ -250,41 +246,18 @@ export default function BoardDetailPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const token = await getToken();
-      const [boardResponse, tasksResponse, agentsResponse] = await Promise.all([
-        fetch(`${apiBase}/api/v1/boards/${boardId}`, {
-          headers: {
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-        }),
-        fetch(`${apiBase}/api/v1/boards/${boardId}/tasks`, {
-          headers: {
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-        }),
-        fetch(`${apiBase}/api/v1/agents`, {
-          headers: {
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-        }),
+      const [boardResult, tasksResult, agentsResult] = await Promise.all([
+        getBoardApiV1BoardsBoardIdGet(boardId),
+        listTasksApiV1BoardsBoardIdTasksGet(boardId),
+        listAgentsApiV1AgentsGet(),
       ]);
 
-      if (!boardResponse.ok) {
-        throw new Error("Unable to load board.");
-      }
-      if (!tasksResponse.ok) {
-        throw new Error("Unable to load tasks.");
-      }
-      if (!agentsResponse.ok) {
-        throw new Error("Unable to load agents.");
-      }
+      if (boardResult.status !== 200) throw new Error("Unable to load board.");
+      if (tasksResult.status !== 200) throw new Error("Unable to load tasks.");
 
-      const boardData = (await boardResponse.json()) as Board;
-      const taskData = (await tasksResponse.json()) as Task[];
-      const agentData = (await agentsResponse.json()) as Agent[];
-      setBoard(boardData);
-      setTasks(taskData);
-      setAgents(agentData);
+      setBoard(boardResult.data);
+      setTasks(tasksResult.data.map(normalizeTask));
+      setAgents(agentsResult.data.map(normalizeAgent));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -326,20 +299,9 @@ export default function BoardDetailPage() {
     setIsApprovalsLoading(true);
     setApprovalsError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/approvals`,
-        {
-          headers: {
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-        },
-      );
-      if (!response.ok) {
-        throw new Error("Unable to load approvals.");
-      }
-      const data = (await response.json()) as Approval[];
-      setApprovals(data);
+      const result = await listApprovalsApiV1BoardsBoardIdApprovalsGet(boardId);
+      if (result.status !== 200) throw new Error("Unable to load approvals.");
+      setApprovals(result.data.map(normalizeApproval));
     } catch (err) {
       setApprovalsError(
         err instanceof Error ? err.message : "Unable to load approvals.",
@@ -347,7 +309,7 @@ export default function BoardDetailPage() {
     } finally {
       setIsApprovalsLoading(false);
     }
-  }, [boardId, getToken, isSignedIn]);
+  }, [boardId, isSignedIn]);
 
   useEffect(() => {
     loadApprovals();
@@ -357,19 +319,11 @@ export default function BoardDetailPage() {
     if (!isSignedIn || !boardId) return;
     setChatError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/memory?limit=200`,
-        {
-          headers: {
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-        },
-      );
-      if (!response.ok) {
-        throw new Error("Unable to load board chat.");
-      }
-      const data = (await response.json()) as BoardChatMessage[];
+      const result = await listBoardMemoryApiV1BoardsBoardIdMemoryGet(boardId, {
+        limit: 200,
+      });
+      if (result.status !== 200) throw new Error("Unable to load board chat.");
+      const data = result.data;
       const chatOnly = data.filter((item) => item.tags?.includes("chat"));
       const ordered = chatOnly.sort((a, b) => {
         const aTime = new Date(a.created_at).getTime();
@@ -382,7 +336,7 @@ export default function BoardDetailPage() {
         err instanceof Error ? err.message : "Unable to load board chat.",
       );
     }
-  }, [boardId, getToken, isSignedIn]);
+  }, [boardId, isSignedIn]);
 
   useEffect(() => {
     loadBoardChat();
@@ -405,22 +359,21 @@ export default function BoardDetailPage() {
 
     const connect = async () => {
       try {
-        const token = await getToken();
-        if (!token || isCancelled) return;
-        const url = new URL(
-          `${apiBase}/api/v1/boards/${boardId}/memory/stream`,
-        );
         const since = latestChatTimestamp(chatMessagesRef.current);
-        if (since) {
-          url.searchParams.set("since", since);
+        const streamResult =
+          await streamBoardMemoryApiV1BoardsBoardIdMemoryStreamGet(
+            boardId,
+            since ? { since } : undefined,
+            {
+              headers: { Accept: "text/event-stream" },
+              signal: abortController.signal,
+            },
+          );
+        if (streamResult.status !== 200) {
+          throw new Error("Unable to connect board chat stream.");
         }
-        const response = await fetch(url.toString(), {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          signal: abortController.signal,
-        });
-        if (!response.ok || !response.body) {
+        const response = streamResult.data as Response;
+        if (!(response instanceof Response) || !response.body) {
           throw new Error("Unable to connect board chat stream.");
         }
         const reader = response.body.getReader();
@@ -483,7 +436,7 @@ export default function BoardDetailPage() {
       isCancelled = true;
       abortController.abort();
     };
-  }, [boardId, getToken, isSignedIn]);
+  }, [boardId, isSignedIn]);
 
   useEffect(() => {
     if (!isSignedIn || !boardId) return;
@@ -492,22 +445,21 @@ export default function BoardDetailPage() {
 
     const connect = async () => {
       try {
-        const token = await getToken();
-        if (!token || isCancelled) return;
-        const url = new URL(
-          `${apiBase}/api/v1/boards/${boardId}/approvals/stream`,
-        );
         const since = latestApprovalTimestamp(approvalsRef.current);
-        if (since) {
-          url.searchParams.set("since", since);
+        const streamResult =
+          await streamApprovalsApiV1BoardsBoardIdApprovalsStreamGet(
+            boardId,
+            since ? { since } : undefined,
+            {
+              headers: { Accept: "text/event-stream" },
+              signal: abortController.signal,
+            },
+          );
+        if (streamResult.status !== 200) {
+          throw new Error("Unable to connect approvals stream.");
         }
-        const response = await fetch(url.toString(), {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          signal: abortController.signal,
-        });
-        if (!response.ok || !response.body) {
+        const response = streamResult.data as Response;
+        if (!(response instanceof Response) || !response.body) {
           throw new Error("Unable to connect approvals stream.");
         }
         const reader = response.body.getReader();
@@ -535,19 +487,20 @@ export default function BoardDetailPage() {
             }
             if (eventType === "approval" && data) {
               try {
-                const payload = JSON.parse(data) as { approval?: Approval };
+                const payload = JSON.parse(data) as { approval?: ApprovalRead };
                 if (payload.approval) {
+                  const normalized = normalizeApproval(payload.approval);
                   setApprovals((prev) => {
                     const index = prev.findIndex(
-                      (item) => item.id === payload.approval?.id,
+                      (item) => item.id === normalized.id,
                     );
                     if (index === -1) {
-                      return [payload.approval as Approval, ...prev];
+                      return [normalized, ...prev];
                     }
                     const next = [...prev];
                     next[index] = {
                       ...next[index],
-                      ...(payload.approval as Approval),
+                      ...normalized,
                     };
                     return next;
                   });
@@ -571,7 +524,7 @@ export default function BoardDetailPage() {
       isCancelled = true;
       abortController.abort();
     };
-  }, [boardId, getToken, isSignedIn]);
+  }, [boardId, isSignedIn]);
 
   useEffect(() => {
     if (!selectedTask) {
@@ -598,20 +551,20 @@ export default function BoardDetailPage() {
 
     const connect = async () => {
       try {
-        const token = await getToken();
-        if (!token || isCancelled) return;
-        const url = new URL(`${apiBase}/api/v1/boards/${boardId}/tasks/stream`);
         const since = latestTaskTimestamp(tasksRef.current);
-        if (since) {
-          url.searchParams.set("since", since);
-        }
-        const response = await fetch(url.toString(), {
-          headers: {
-            Authorization: `Bearer ${token}`,
+        const streamResult = await streamTasksApiV1BoardsBoardIdTasksStreamGet(
+          boardId,
+          since ? { since } : undefined,
+          {
+            headers: { Accept: "text/event-stream" },
+            signal: abortController.signal,
           },
-          signal: abortController.signal,
-        });
-        if (!response.ok || !response.body) {
+        );
+        if (streamResult.status !== 200) {
+          throw new Error("Unable to connect task stream.");
+        }
+        const response = streamResult.data as Response;
+        if (!(response instanceof Response) || !response.body) {
           throw new Error("Unable to connect task stream.");
         }
         const reader = response.body.getReader();
@@ -641,11 +594,11 @@ export default function BoardDetailPage() {
               try {
                 const payload = JSON.parse(data) as {
                   type?: string;
-                  task?: Task;
-                  comment?: TaskComment;
+                  task?: TaskRead;
+                  comment?: TaskCommentRead;
                 };
                 if (payload.comment?.task_id && payload.type === "task.comment") {
-                  pushLiveFeed(payload.comment as TaskComment);
+                  pushLiveFeed(payload.comment);
                   setComments((prev) => {
                     if (selectedTask?.id !== payload.comment?.task_id) {
                       return prev;
@@ -657,13 +610,14 @@ export default function BoardDetailPage() {
                     return [...prev, payload.comment as TaskComment];
                   });
                 } else if (payload.task) {
+                  const normalizedTask = normalizeTask(payload.task);
                   setTasks((prev) => {
-                    const index = prev.findIndex((item) => item.id === payload.task?.id);
+                    const index = prev.findIndex((item) => item.id === normalizedTask.id);
                     if (index === -1) {
-                      return [payload.task as Task, ...prev];
+                      return [normalizedTask, ...prev];
                     }
                     const next = [...prev];
-                    next[index] = { ...next[index], ...(payload.task as Task) };
+                    next[index] = { ...next[index], ...normalizedTask };
                     return next;
                   });
                 }
@@ -686,7 +640,7 @@ export default function BoardDetailPage() {
       isCancelled = true;
       abortController.abort();
     };
-  }, [board, boardId, getToken, isSignedIn, selectedTask?.id, pushLiveFeed]);
+  }, [board, boardId, isSignedIn, selectedTask?.id, pushLiveFeed]);
 
   useEffect(() => {
     if (!isSignedIn || !boardId) return;
@@ -695,21 +649,22 @@ export default function BoardDetailPage() {
 
     const connect = async () => {
       try {
-        const token = await getToken();
-        if (!token || isCancelled) return;
-        const url = new URL(`${apiBase}/api/v1/agents/stream`);
-        url.searchParams.set("board_id", boardId);
         const since = latestAgentTimestamp(agentsRef.current);
-        if (since) {
-          url.searchParams.set("since", since);
-        }
-        const response = await fetch(url.toString(), {
-          headers: {
-            Authorization: `Bearer ${token}`,
+        const streamResult = await streamAgentsApiV1AgentsStreamGet(
+          {
+            board_id: boardId,
+            since: since ?? null,
           },
-          signal: abortController.signal,
-        });
-        if (!response.ok || !response.body) {
+          {
+            headers: { Accept: "text/event-stream" },
+            signal: abortController.signal,
+          },
+        );
+        if (streamResult.status !== 200) {
+          throw new Error("Unable to connect agent stream.");
+        }
+        const response = streamResult.data as Response;
+        if (!(response instanceof Response) || !response.body) {
           throw new Error("Unable to connect agent stream.");
         }
         const reader = response.body.getReader();
@@ -737,19 +692,18 @@ export default function BoardDetailPage() {
             }
             if (eventType === "agent" && data) {
               try {
-                const payload = JSON.parse(data) as { agent?: Agent };
+                const payload = JSON.parse(data) as { agent?: AgentRead };
                 if (payload.agent) {
+                  const normalized = normalizeAgent(payload.agent);
                   setAgents((prev) => {
-                    const index = prev.findIndex(
-                      (item) => item.id === payload.agent?.id,
-                    );
+                    const index = prev.findIndex((item) => item.id === normalized.id);
                     if (index === -1) {
-                      return [payload.agent as Agent, ...prev];
+                      return [normalized, ...prev];
                     }
                     const next = [...prev];
                     next[index] = {
                       ...next[index],
-                      ...(payload.agent as Agent),
+                      ...normalized,
                     };
                     return next;
                   });
@@ -773,7 +727,7 @@ export default function BoardDetailPage() {
       isCancelled = true;
       abortController.abort();
     };
-  }, [boardId, getToken, isSignedIn]);
+  }, [boardId, isSignedIn]);
 
   const resetForm = () => {
     setTitle("");
@@ -792,26 +746,15 @@ export default function BoardDetailPage() {
     setIsCreating(true);
     setCreateError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(`${apiBase}/api/v1/boards/${boardId}/tasks`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: token ? `Bearer ${token}` : "",
-        },
-        body: JSON.stringify({
-          title: trimmed,
-          description: description.trim() || null,
-          status: "inbox",
-          priority,
-        }),
+      const result = await createTaskApiV1BoardsBoardIdTasksPost(boardId, {
+        title: trimmed,
+        description: description.trim() || null,
+        status: "inbox",
+        priority,
       });
+      if (result.status !== 200) throw new Error("Unable to create task.");
 
-      if (!response.ok) {
-        throw new Error("Unable to create task.");
-      }
-
-      const created = (await response.json()) as Task;
+      const created = normalizeTask(result.data);
       setTasks((prev) => [created, ...prev]);
       setIsDialogOpen(false);
       resetForm();
@@ -829,25 +772,14 @@ export default function BoardDetailPage() {
     setIsChatSending(true);
     setChatError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/memory`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-          body: JSON.stringify({
-            content: trimmed,
-            tags: ["chat"],
-          }),
-        },
-      );
-      if (!response.ok) {
+      const result = await createBoardMemoryApiV1BoardsBoardIdMemoryPost(boardId, {
+        content: trimmed,
+        tags: ["chat"],
+      });
+      if (result.status !== 200) {
         throw new Error("Unable to send message.");
       }
-      const created = (await response.json()) as BoardChatMessage;
+      const created = result.data;
       if (created.tags?.includes("chat")) {
         setChatMessages((prev) => {
           const exists = prev.some((item) => item.id === created.id);
@@ -1015,18 +947,13 @@ export default function BoardDetailPage() {
     setIsCommentsLoading(true);
     setCommentsError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/tasks/${taskId}/comments`,
-        {
-          headers: { Authorization: token ? `Bearer ${token}` : "" },
-        },
-      );
-      if (!response.ok) {
-        throw new Error("Unable to load comments.");
-      }
-      const data = (await response.json()) as TaskComment[];
-      setComments(data);
+      const result =
+        await listTaskCommentsApiV1BoardsBoardIdTasksTaskIdCommentsGet(
+          boardId,
+          taskId,
+        );
+      if (result.status !== 200) throw new Error("Unable to load comments.");
+      setComments(result.data);
     } catch (err) {
       setCommentsError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -1034,10 +961,12 @@ export default function BoardDetailPage() {
     }
   };
 
-  const openComments = (task: Task) => {
+  const openComments = (task: { id: string }) => {
     setIsChatOpen(false);
     setIsLiveFeedOpen(false);
-    setSelectedTask(task);
+    const fullTask = tasksRef.current.find((item) => item.id === task.id);
+    if (!fullTask) return;
+    setSelectedTask(fullTask);
     setIsDetailOpen(true);
     void loadComments(task.id);
   };
@@ -1089,22 +1018,14 @@ export default function BoardDetailPage() {
     setIsPostingComment(true);
     setPostCommentError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/tasks/${selectedTask.id}/comments`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-          body: JSON.stringify({ message: trimmed }),
-        },
-      );
-      if (!response.ok) {
-        throw new Error("Unable to send message.");
-      }
-      const created = (await response.json()) as TaskComment;
+      const result =
+        await createTaskCommentApiV1BoardsBoardIdTasksTaskIdCommentsPost(
+          boardId,
+          selectedTask.id,
+          { message: trimmed },
+        );
+      if (result.status !== 200) throw new Error("Unable to send message.");
+      const created = result.data;
       setComments((prev) => [created, ...prev]);
       setNewComment("");
     } catch (err) {
@@ -1126,28 +1047,19 @@ export default function BoardDetailPage() {
     setIsSavingTask(true);
     setSaveTaskError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/tasks/${selectedTask.id}`,
+      const result = await updateTaskApiV1BoardsBoardIdTasksTaskIdPatch(
+        boardId,
+        selectedTask.id,
         {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-          body: JSON.stringify({
-            title: trimmedTitle,
-            description: editDescription.trim() || null,
-            status: editStatus,
-            priority: editPriority,
-            assigned_agent_id: editAssigneeId || null,
-          }),
+          title: trimmedTitle,
+          description: editDescription.trim() || null,
+          status: editStatus,
+          priority: editPriority,
+          assigned_agent_id: editAssigneeId || null,
         },
       );
-      if (!response.ok) {
-        throw new Error("Unable to update task.");
-      }
-      const updated = (await response.json()) as Task;
+      if (result.status !== 200) throw new Error("Unable to update task.");
+      const updated = normalizeTask(result.data);
       setTasks((prev) =>
         prev.map((task) => (task.id === updated.id ? updated : task)),
       );
@@ -1177,19 +1089,11 @@ export default function BoardDetailPage() {
     setIsDeletingTask(true);
     setDeleteTaskError(null);
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/tasks/${selectedTask.id}`,
-        {
-          method: "DELETE",
-          headers: {
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-        },
+      const result = await deleteTaskApiV1BoardsBoardIdTasksTaskIdDelete(
+        boardId,
+        selectedTask.id,
       );
-      if (!response.ok) {
-        throw new Error("Unable to delete task.");
-      }
+      if (result.status !== 200) throw new Error("Unable to delete task.");
       setTasks((prev) => prev.filter((task) => task.id !== selectedTask.id));
       setIsDeleteDialogOpen(false);
       closeComments();
@@ -1202,7 +1106,7 @@ export default function BoardDetailPage() {
     }
   };
 
-  const handleTaskMove = async (taskId: string, status: string) => {
+  const handleTaskMove = async (taskId: string, status: TaskStatus) => {
     if (!isSignedIn || !boardId) return;
     const currentTask = tasksRef.current.find((task) => task.id === taskId);
     if (!currentTask || currentTask.status === status) return;
@@ -1220,22 +1124,13 @@ export default function BoardDetailPage() {
       ),
     );
     try {
-      const token = await getToken();
-      const response = await fetch(
-        `${apiBase}/api/v1/boards/${boardId}/tasks/${taskId}`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: token ? `Bearer ${token}` : "",
-          },
-          body: JSON.stringify({ status }),
-        },
+      const result = await updateTaskApiV1BoardsBoardIdTasksTaskIdPatch(
+        boardId,
+        taskId,
+        { status },
       );
-      if (!response.ok) {
-        throw new Error("Unable to move task.");
-      }
-      const updated = (await response.json()) as Task;
+      if (result.status !== 200) throw new Error("Unable to move task.");
+      const updated = normalizeTask(result.data);
       setTasks((prev) =>
         prev.map((task) => (task.id === updated.id ? updated : task)),
       );
@@ -1265,7 +1160,12 @@ export default function BoardDetailPage() {
 
   const agentAvatarLabel = (agent: Agent) => {
     if (agent.is_board_lead) return "⚙️";
-    const emoji = resolveEmoji(agent.identity_profile?.emoji ?? null);
+    let emojiValue: string | null = null;
+    if (agent.identity_profile && typeof agent.identity_profile === "object") {
+      const rawEmoji = (agent.identity_profile as Record<string, unknown>).emoji;
+      emojiValue = typeof rawEmoji === "string" ? rawEmoji : null;
+    }
+    const emoji = resolveEmoji(emojiValue);
     return emoji ?? agentInitials(agent);
   };
 
@@ -1351,8 +1251,8 @@ export default function BoardDetailPage() {
     payload: Approval["payload"],
     key: string,
   ) => {
-    if (!payload) return null;
-    const value = payload[key as keyof typeof payload];
+    if (!payload || typeof payload !== "object") return null;
+    const value = (payload as Record<string, unknown>)[key];
     if (typeof value === "string" || typeof value === "number") {
       return String(value);
     }
@@ -1393,22 +1293,16 @@ export default function BoardDetailPage() {
       setApprovalsUpdatingId(approvalId);
       setApprovalsError(null);
       try {
-        const token = await getToken();
-        const response = await fetch(
-          `${apiBase}/api/v1/boards/${boardId}/approvals/${approvalId}`,
-          {
-            method: "PATCH",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: token ? `Bearer ${token}` : "",
-            },
-            body: JSON.stringify({ status }),
-          },
-        );
-        if (!response.ok) {
+        const result =
+          await updateApprovalApiV1BoardsBoardIdApprovalsApprovalIdPatch(
+            boardId,
+            approvalId,
+            { status },
+          );
+        if (result.status !== 200) {
           throw new Error("Unable to update approval.");
         }
-        const updated = (await response.json()) as Approval;
+        const updated = normalizeApproval(result.data);
         setApprovals((prev) =>
           prev.map((item) => (item.id === approvalId ? updated : item)),
         );
@@ -1420,7 +1314,7 @@ export default function BoardDetailPage() {
         setApprovalsUpdatingId(null);
       }
     },
-    [boardId, getToken, isSignedIn],
+    [boardId, isSignedIn],
   );
 
   return (
@@ -2219,7 +2113,7 @@ export default function BoardDetailPage() {
                 </label>
                 <Select
                   value={editStatus}
-                  onValueChange={setEditStatus}
+                  onValueChange={(value) => setEditStatus(value as TaskStatus)}
                   disabled={!selectedTask || isSavingTask}
                 >
                   <SelectTrigger>

@@ -5,9 +5,11 @@ from uuid import UUID
 
 from sqlmodel import SQLModel
 
+from app.schemas.common import NonEmptyStr
+
 
 class BoardMemoryCreate(SQLModel):
-    content: str
+    content: NonEmptyStr
     tags: list[str] | None = None
     source: str | None = None
 

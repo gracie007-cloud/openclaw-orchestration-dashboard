@@ -5,6 +5,8 @@ from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
 
+from app.core.time import utcnow
+
 
 class ActivityEvent(SQLModel, table=True):
     __tablename__ = "activity_events"
@@ -14,4 +16,4 @@ class ActivityEvent(SQLModel, table=True):
     message: str | None = None
     agent_id: UUID | None = Field(default=None, foreign_key="agents.id", index=True)
     task_id: UUID | None = Field(default=None, foreign_key="tasks.id", index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)

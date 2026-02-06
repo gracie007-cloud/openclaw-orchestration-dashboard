@@ -4,11 +4,12 @@
  * Mission Control API
  * OpenAPI spec version: 0.1.0
  */
+import type { TaskCreateStatus } from "./taskCreateStatus";
 
 export interface TaskCreate {
   title: string;
   description?: string | null;
-  status?: string;
+  status?: TaskCreateStatus;
   priority?: string;
   due_at?: string | null;
   assigned_agent_id?: string | null;

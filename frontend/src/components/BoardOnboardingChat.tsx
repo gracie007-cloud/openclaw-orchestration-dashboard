@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useAuth } from "@clerk/nextjs";
-
 import {
   DialogFooter,
   DialogHeader,
@@ -11,9 +9,19 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { getApiBaseUrl } from "@/lib/api-base";
 
-const apiBase = getApiBaseUrl();
+import {
+  answerOnboardingApiV1BoardsBoardIdOnboardingAnswerPost,
+  confirmOnboardingApiV1BoardsBoardIdOnboardingConfirmPost,
+  getOnboardingApiV1BoardsBoardIdOnboardingGet,
+  startOnboardingApiV1BoardsBoardIdOnboardingStartPost,
+} from "@/api/generated/board-onboarding/board-onboarding";
+import type {
+  BoardOnboardingRead,
+  BoardOnboardingReadDraftGoal,
+  BoardOnboardingReadMessages,
+  BoardRead,
+} from "@/api/generated/model";
 
 type BoardDraft = {
   board_type?: string;
@@ -22,24 +30,55 @@ type BoardDraft = {
   target_date?: string | null;
 };
 
-type BoardSummary = {
-  id: string;
-  name: string;
-  slug: string;
-  board_type?: string;
-  objective?: string | null;
-  success_metrics?: Record<string, unknown> | null;
-  target_date?: string | null;
-  goal_confirmed?: boolean;
+type NormalizedMessage = {
+  role: string;
+  content: string;
 };
 
-type OnboardingSession = {
-  id: string;
-  board_id: string;
-  session_key: string;
-  status: string;
-  messages?: Array<{ role: string; content: string }> | null;
-  draft_goal?: BoardDraft | null;
+const normalizeMessages = (
+  value?: BoardOnboardingReadMessages,
+): NormalizedMessage[] | null => {
+  if (!value) return null;
+  if (!Array.isArray(value)) return null;
+  const items: NormalizedMessage[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Record<string, unknown>;
+    const role = typeof raw.role === "string" ? raw.role : null;
+    const content = typeof raw.content === "string" ? raw.content : null;
+    if (!role || !content) continue;
+    items.push({ role, content });
+  }
+  return items.length ? items : null;
+};
+
+const normalizeDraftGoal = (value?: BoardOnboardingReadDraftGoal): BoardDraft | null => {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+
+  const board_type = typeof raw.board_type === "string" ? raw.board_type : undefined;
+  const objective =
+    typeof raw.objective === "string" ? raw.objective : raw.objective === null ? null : undefined;
+  const target_date =
+    typeof raw.target_date === "string"
+      ? raw.target_date
+      : raw.target_date === null
+        ? null
+        : undefined;
+
+  let success_metrics: Record<string, unknown> | null = null;
+  if (raw.success_metrics === null || raw.success_metrics === undefined) {
+    success_metrics = null;
+  } else if (typeof raw.success_metrics === "object") {
+    success_metrics = raw.success_metrics as Record<string, unknown>;
+  }
+
+  return {
+    board_type,
+    objective: objective ?? null,
+    success_metrics,
+    target_date: target_date ?? null,
+  };
 };
 
 type QuestionOption = { id: string; label: string };
@@ -75,7 +114,7 @@ const normalizeQuestion = (value: unknown): Question | null => {
   return { question: data.question, options };
 };
 
-const parseQuestion = (messages?: Array<{ role: string; content: string }> | null) => {
+const parseQuestion = (messages?: NormalizedMessage[] | null) => {
   if (!messages?.length) return null;
   const lastAssistant = [...messages].reverse().find((msg) => msg.role === "assistant");
   if (!lastAssistant?.content) return null;
@@ -99,66 +138,52 @@ export function BoardOnboardingChat({
   onConfirmed,
 }: {
   boardId: string;
-  onConfirmed: (board: BoardSummary) => void;
+  onConfirmed: (board: BoardRead) => void;
 }) {
-  const { getToken } = useAuth();
-  const [session, setSession] = useState<OnboardingSession | null>(null);
+  const [session, setSession] = useState<BoardOnboardingRead | null>(null);
   const [loading, setLoading] = useState(false);
   const [otherText, setOtherText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
 
-  const question = useMemo(() => parseQuestion(session?.messages), [session]);
-  const draft = session?.draft_goal ?? null;
+  const normalizedMessages = useMemo(
+    () => normalizeMessages(session?.messages),
+    [session?.messages],
+  );
+  const question = useMemo(() => parseQuestion(normalizedMessages), [normalizedMessages]);
+  const draft = useMemo(() => normalizeDraftGoal(session?.draft_goal), [session?.draft_goal]);
 
   useEffect(() => {
     setSelectedOptions([]);
     setOtherText("");
   }, [question?.question]);
 
-  const authFetch = useCallback(
-    async (url: string, options: RequestInit = {}) => {
-      const token = await getToken();
-      return fetch(url, {
-        ...options,
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(options.headers ?? {}),
-        },
-      });
-    },
-    [getToken]
-  );
-
   const startSession = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(`${apiBase}/api/v1/boards/${boardId}/onboarding/start`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) throw new Error("Unable to start onboarding.");
-      const data = (await res.json()) as OnboardingSession;
-      setSession(data);
+      const result = await startOnboardingApiV1BoardsBoardIdOnboardingStartPost(
+        boardId,
+        {},
+      );
+      if (result.status !== 200) throw new Error("Unable to start onboarding.");
+      setSession(result.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start onboarding.");
     } finally {
       setLoading(false);
     }
-  }, [authFetch, boardId]);
+  }, [boardId]);
 
   const refreshSession = useCallback(async () => {
     try {
-      const res = await authFetch(`${apiBase}/api/v1/boards/${boardId}/onboarding`);
-      if (!res.ok) return;
-      const data = (await res.json()) as OnboardingSession;
-      setSession(data);
+      const result = await getOnboardingApiV1BoardsBoardIdOnboardingGet(boardId);
+      if (result.status !== 200) return;
+      setSession(result.data);
     } catch {
       // ignore
     }
-  }, [authFetch, boardId]);
+  }, [boardId]);
 
   useEffect(() => {
     startSession();
@@ -171,19 +196,15 @@ export function BoardOnboardingChat({
       setLoading(true);
       setError(null);
       try {
-        const res = await authFetch(
-          `${apiBase}/api/v1/boards/${boardId}/onboarding/answer`,
+        const result = await answerOnboardingApiV1BoardsBoardIdOnboardingAnswerPost(
+          boardId,
           {
-            method: "POST",
-            body: JSON.stringify({
-              answer: value,
-              other_text: freeText ?? null,
-            }),
-          }
+            answer: value,
+            other_text: freeText ?? null,
+          },
         );
-        if (!res.ok) throw new Error("Unable to submit answer.");
-        const data = (await res.json()) as OnboardingSession;
-        setSession(data);
+        if (result.status !== 200) throw new Error("Unable to submit answer.");
+        setSession(result.data);
         setOtherText("");
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to submit answer.");
@@ -191,7 +212,7 @@ export function BoardOnboardingChat({
         setLoading(false);
       }
     },
-    [authFetch, boardId]
+    [boardId],
   );
 
   const toggleOption = useCallback((label: string) => {
@@ -213,21 +234,17 @@ export function BoardOnboardingChat({
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(
-        `${apiBase}/api/v1/boards/${boardId}/onboarding/confirm`,
+      const result = await confirmOnboardingApiV1BoardsBoardIdOnboardingConfirmPost(
+        boardId,
         {
-          method: "POST",
-          body: JSON.stringify({
-            board_type: draft.board_type ?? "goal",
-            objective: draft.objective ?? null,
-            success_metrics: draft.success_metrics ?? null,
-            target_date: draft.target_date ?? null,
-          }),
-        }
+          board_type: draft.board_type ?? "goal",
+          objective: draft.objective ?? null,
+          success_metrics: draft.success_metrics ?? null,
+          target_date: draft.target_date ?? null,
+        },
       );
-      if (!res.ok) throw new Error("Unable to confirm board goal.");
-      const updated = await res.json();
-      onConfirmed(updated);
+      if (result.status !== 200) throw new Error("Unable to confirm board goal.");
+      onConfirmed(result.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to confirm board goal.");
     } finally {
