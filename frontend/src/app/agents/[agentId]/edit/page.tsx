@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
-import { SignedIn, SignedOut, useAuth } from "@/auth/clerk";
+import { useAuth } from "@/auth/clerk";
 
 import { ApiError } from "@/api/mutator";
 import {
@@ -18,9 +18,7 @@ import {
   useListBoardsApiV1BoardsGet,
 } from "@/api/generated/boards/boards";
 import type { AgentRead, AgentUpdate, BoardRead } from "@/api/generated/model";
-import { SignedOutPanel } from "@/components/auth/SignedOutPanel";
-import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
-import { DashboardShell } from "@/components/templates/DashboardShell";
+import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import SearchableSelect, {
@@ -272,35 +270,21 @@ export default function EditAgentPage() {
   };
 
   return (
-    <DashboardShell>
-      <SignedOut>
-        <SignedOutPanel
-          message="Sign in to edit agents."
-          forceRedirectUrl={`/agents/${agentId}/edit`}
-          signUpForceRedirectUrl={`/agents/${agentId}/edit`}
-        />
-      </SignedOut>
-      <SignedIn>
-        <DashboardSidebar />
-        <main className="flex-1 overflow-y-auto bg-slate-50">
-          <div className="border-b border-slate-200 bg-white px-8 py-6">
-            <div>
-              <h1 className="font-heading text-2xl font-semibold text-slate-900 tracking-tight">
-                {resolvedName.trim()
-                  ? resolvedName
-                  : (loadedAgent?.name ?? "Edit agent")}
-              </h1>
-              <p className="mt-1 text-sm text-slate-500">
-                Status is controlled by agent heartbeat.
-              </p>
-            </div>
-          </div>
-
-          <div className="p-8">
-            <form
-              onSubmit={handleSubmit}
-              className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-6"
-            >
+    <DashboardPageLayout
+      signedOut={{
+        message: "Sign in to edit agents.",
+        forceRedirectUrl: `/agents/${agentId}/edit`,
+        signUpForceRedirectUrl: `/agents/${agentId}/edit`,
+      }}
+      title={
+        resolvedName.trim() ? resolvedName : (loadedAgent?.name ?? "Edit agent")
+      }
+      description="Status is controlled by agent heartbeat."
+    >
+      <form
+        onSubmit={handleSubmit}
+        className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-6"
+      >
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                   Basic configuration
@@ -536,10 +520,7 @@ export default function EditAgentPage() {
                   Back to agent
                 </Button>
               </div>
-            </form>
-          </div>
-        </main>
-      </SignedIn>
-    </DashboardShell>
+      </form>
+    </DashboardPageLayout>
   );
 }

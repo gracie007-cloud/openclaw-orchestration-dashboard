@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 
-import { SignedIn, SignedOut, useAuth } from "@/auth/clerk";
+import { useAuth } from "@/auth/clerk";
 
 import { ApiError } from "@/api/mutator";
 import {
@@ -23,9 +23,7 @@ import type {
   BoardGroupUpdate,
   BoardRead,
 } from "@/api/generated/model";
-import { SignedOutPanel } from "@/components/auth/SignedOutPanel";
-import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
-import { DashboardShell } from "@/components/templates/DashboardShell";
+import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -280,32 +278,18 @@ export default function EditBoardGroupPage() {
   );
 
   return (
-    <DashboardShell>
-      <SignedOut>
-        <SignedOutPanel
-          message="Sign in to edit board groups."
-          forceRedirectUrl={`/board-groups/${groupId ?? ""}/edit`}
-        />
-      </SignedOut>
-      <SignedIn>
-        <DashboardSidebar />
-        <main className="flex-1 overflow-y-auto bg-slate-50">
-          <div className="border-b border-slate-200 bg-white px-8 py-6">
-            <div>
-              <h1 className="font-heading text-2xl font-semibold text-slate-900 tracking-tight">
-                {title}
-              </h1>
-              <p className="mt-1 text-sm text-slate-500">
-                Update the shared context that connects boards in this group.
-              </p>
-            </div>
-          </div>
-
-          <div className="p-8">
-            <form
-              onSubmit={handleSubmit}
-              className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
-            >
+    <DashboardPageLayout
+      signedOut={{
+        message: "Sign in to edit board groups.",
+        forceRedirectUrl: `/board-groups/${groupId ?? ""}/edit`,
+      }}
+      title={title}
+      description="Update the shared context that connects boards in this group."
+    >
+      <form
+        onSubmit={handleSubmit}
+        className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+      >
               {assignFailedCount && Number.isFinite(assignFailedCount) ? (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm">
                   Group was created, but {assignFailedCount} board assignment
@@ -466,10 +450,7 @@ export default function EditBoardGroupPage() {
                   {isLoading ? "Saving…" : "Save changes"}
                 </Button>
               </div>
-            </form>
-          </div>
-        </main>
-      </SignedIn>
-    </DashboardShell>
+      </form>
+    </DashboardPageLayout>
   );
 }
