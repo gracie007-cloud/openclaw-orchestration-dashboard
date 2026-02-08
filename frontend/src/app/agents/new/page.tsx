@@ -13,6 +13,10 @@ import {
   useListBoardsApiV1BoardsGet,
 } from "@/api/generated/boards/boards";
 import { useCreateAgentApiV1AgentsPost } from "@/api/generated/agents/agents";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import type { BoardRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
@@ -80,6 +84,20 @@ export default function NewAgentPage() {
   const router = useRouter();
   const { isSignedIn } = useAuth();
 
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
+
   const [name, setName] = useState("");
   const [boardId, setBoardId] = useState<string>("");
   const [heartbeatEvery, setHeartbeatEvery] = useState("10m");
@@ -95,7 +113,7 @@ export default function NewAgentPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchOnMount: "always",
     },
   });
@@ -182,15 +200,20 @@ export default function NewAgentPage() {
           </div>
 
           <div className="p-8">
-            <form
-              onSubmit={handleSubmit}
-              className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-6"
-            >
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Basic configuration
-                </p>
-                <div className="mt-4 space-y-6">
+            {!isAdmin ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
+                Only organization owners and admins can create agents.
+              </div>
+            ) : (
+              <form
+                onSubmit={handleSubmit}
+                className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-6"
+              >
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Basic configuration
+                  </p>
+                  <div className="mt-4 space-y-6">
                   <div className="grid gap-6 md:grid-cols-2">
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-slate-900">
@@ -369,6 +392,7 @@ export default function NewAgentPage() {
                 </Button>
               </div>
             </form>
+            )}
           </div>
         </main>
       </SignedIn>

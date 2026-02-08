@@ -42,6 +42,10 @@ import {
   getListBoardsApiV1BoardsGetQueryKey,
   useListBoardsApiV1BoardsGet,
 } from "@/api/generated/boards/boards";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import type { AgentRead } from "@/api/generated/model";
 
 const parseTimestamp = (value?: string | null) => {
@@ -88,6 +92,20 @@ export default function AgentsPage() {
   const queryClient = useQueryClient();
   const router = useRouter();
 
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
+
   const [sorting, setSorting] = useState<SortingState>([
     { id: "name", desc: false },
   ]);
@@ -102,7 +120,7 @@ export default function AgentsPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchInterval: 30_000,
       refetchOnMount: "always",
     },
@@ -113,7 +131,7 @@ export default function AgentsPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchInterval: 15_000,
       refetchOnMount: "always",
     },
@@ -323,9 +341,15 @@ export default function AgentsPage() {
           </div>
 
           <div className="p-8">
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
+            {!isAdmin ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
+                Only organization owners and admins can access agents.
+              </div>
+            ) : (
+              <>
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
                   <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-semibold uppercase tracking-wider text-slate-500">
                     {table.getHeaderGroups().map((headerGroup) => (
                       <tr key={headerGroup.id}>
@@ -409,11 +433,13 @@ export default function AgentsPage() {
               </div>
             </div>
 
-            {agentsQuery.error ? (
-              <p className="mt-4 text-sm text-red-500">
-                {agentsQuery.error.message}
-              </p>
-            ) : null}
+                {agentsQuery.error ? (
+                  <p className="mt-4 text-sm text-red-500">
+                    {agentsQuery.error.message}
+                  </p>
+                ) : null}
+              </>
+            )}
           </div>
         </main>
       </SignedIn>

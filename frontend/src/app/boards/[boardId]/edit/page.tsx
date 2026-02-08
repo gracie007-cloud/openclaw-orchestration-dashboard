@@ -22,6 +22,10 @@ import {
   type listGatewaysApiV1GatewaysGetResponse,
   useListGatewaysApiV1GatewaysGet,
 } from "@/api/generated/gateways/gateways";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import type {
   BoardGroupRead,
   BoardRead,
@@ -58,6 +62,20 @@ export default function EditBoardPage() {
   const params = useParams();
   const boardIdParam = params?.boardId;
   const boardId = Array.isArray(boardIdParam) ? boardIdParam[0] : boardIdParam;
+
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
 
   const mainRef = useRef<HTMLElement | null>(null);
 
@@ -130,7 +148,7 @@ export default function EditBoardPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchOnMount: "always",
       retry: false,
     },
@@ -141,7 +159,7 @@ export default function EditBoardPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchOnMount: "always",
       retry: false,
     },
@@ -152,7 +170,7 @@ export default function EditBoardPage() {
     ApiError
   >(boardId ?? "", {
     query: {
-      enabled: Boolean(isSignedIn && boardId),
+      enabled: Boolean(isSignedIn && isAdmin && boardId),
       refetchOnMount: "always",
       retry: false,
     },
@@ -315,14 +333,20 @@ export default function EditBoardPage() {
                   Update board settings and gateway.
                 </p>
               </div>
+            )}
             </div>
 
             <div className="p-8">
-              <div className="space-y-6">
-                <form
-                  onSubmit={handleSubmit}
-                  className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
-                >
+              {!isAdmin ? (
+                <div className="rounded-xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
+                  Only organization owners and admins can edit board settings.
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <form
+                    onSubmit={handleSubmit}
+                    className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+                  >
                   {resolvedBoardType !== "general" &&
                   baseBoard &&
                   !(baseBoard.goal_confirmed ?? false) ? (
@@ -495,6 +519,7 @@ export default function EditBoardPage() {
                   </div>
                 </form>
               </div>
+            )}
             </div>
           </main>
         </SignedIn>

@@ -13,6 +13,10 @@ import {
   gatewaysStatusApiV1GatewaysStatusGet,
   useCreateGatewayApiV1GatewaysPost,
 } from "@/api/generated/gateways/gateways";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
@@ -41,6 +45,20 @@ const validateGatewayUrl = (value: string) => {
 export default function NewGatewayPage() {
   const { isSignedIn } = useAuth();
   const router = useRouter();
+
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
 
   const [name, setName] = useState("");
   const [gatewayUrl, setGatewayUrl] = useState("");
@@ -191,21 +209,26 @@ export default function NewGatewayPage() {
           </div>
 
           <div className="p-8">
-            <form
-              onSubmit={handleSubmit}
-              className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
-            >
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-900">
-                  Gateway name <span className="text-red-500">*</span>
-                </label>
-                <Input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="Primary gateway"
-                  disabled={isLoading}
-                />
+            {!isAdmin ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
+                Only organization owners and admins can create gateways.
               </div>
+            ) : (
+              <form
+                onSubmit={handleSubmit}
+                className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+              >
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-900">
+                    Gateway name <span className="text-red-500">*</span>
+                  </label>
+                  <Input
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="Primary gateway"
+                    disabled={isLoading}
+                  />
+                </div>
 
               <div className="grid gap-6 md:grid-cols-2">
                 <div className="space-y-2">
@@ -320,6 +343,7 @@ export default function NewGatewayPage() {
                 </Button>
               </div>
             </form>
+            )}
           </div>
         </main>
       </SignedIn>

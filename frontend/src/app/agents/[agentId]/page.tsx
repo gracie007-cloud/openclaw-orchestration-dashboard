@@ -22,6 +22,10 @@ import {
   type listBoardsApiV1BoardsGetResponse,
   useListBoardsApiV1BoardsGet,
 } from "@/api/generated/boards/boards";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import type {
   ActivityEventRead,
   AgentRead,
@@ -80,6 +84,20 @@ export default function AgentDetailPage() {
   const agentIdParam = params?.agentId;
   const agentId = Array.isArray(agentIdParam) ? agentIdParam[0] : agentIdParam;
 
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
+
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -88,7 +106,7 @@ export default function AgentDetailPage() {
     ApiError
   >(agentId ?? "", {
     query: {
-      enabled: Boolean(isSignedIn && agentId),
+      enabled: Boolean(isSignedIn && isAdmin && agentId),
       refetchInterval: 30_000,
       refetchOnMount: "always",
       retry: false,
@@ -102,7 +120,7 @@ export default function AgentDetailPage() {
     { limit: 200 },
     {
       query: {
-        enabled: Boolean(isSignedIn),
+        enabled: Boolean(isSignedIn && isAdmin),
         refetchInterval: 30_000,
         retry: false,
       },
@@ -114,7 +132,7 @@ export default function AgentDetailPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchInterval: 60_000,
       refetchOnMount: "always",
       retry: false,
@@ -186,7 +204,14 @@ export default function AgentDetailPage() {
       </SignedOut>
       <SignedIn>
         <DashboardSidebar />
-        <div className="flex h-full flex-col gap-6 rounded-2xl surface-panel p-8">
+        {!isAdmin ? (
+          <div className="flex h-full flex-col gap-6 rounded-2xl surface-panel p-8">
+            <div className="rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)] px-6 py-5 text-sm text-muted">
+              Only organization owners and admins can access agents.
+            </div>
+          </div>
+        ) : (
+          <div className="flex h-full flex-col gap-6 rounded-2xl surface-panel p-8">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-quiet">
@@ -371,7 +396,8 @@ export default function AgentDetailPage() {
               Agent not found.
             </div>
           )}
-        </div>
+          </div>
+        )}
       </SignedIn>
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
