@@ -88,9 +88,9 @@ jobs:
           make frontend-build
 
 
-      - name: Docs link check
+      - name: Docs quality gates (lint + relative link check)
         run: |
-          python scripts/check_markdown_links.py
+          make docs-check
 
       - name: Upload coverage artifacts
         if: always()

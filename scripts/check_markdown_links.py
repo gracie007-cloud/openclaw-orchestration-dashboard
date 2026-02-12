@@ -27,18 +27,27 @@ LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 def iter_md_files(root: Path) -> list[Path]:
     """Return markdown files to check.
 
-    Policy (initial): check only `docs/**/*.md`.
+    Policy:
+    - Always check root contributor-facing markdown (`README.md`, `CONTRIBUTING.md`).
+    - If `docs/` exists, also check `docs/**/*.md`.
 
     Rationale:
-    - Root `README.md` / `CONTRIBUTING.md` may temporarily contain legacy links
-      during docs re-org. Once docs + README are stabilized, we can expand this
-      to include root markdown files.
+    - We want fast feedback on broken *relative* links in the most important entrypoints.
+    - We intentionally do **not** crawl external URLs.
     """
 
+    files: list[Path] = []
+
+    for p in (root / "README.md", root / "CONTRIBUTING.md"):
+        if p.exists():
+            files.append(p)
+
     docs = root / "docs"
-    if not docs.exists():
-        return []
-    return sorted(docs.rglob("*.md"))
+    if docs.exists():
+        files.extend(sorted(docs.rglob("*.md")))
+
+    # de-dupe + stable order
+    return sorted({p.resolve() for p in files})
 
 
 def normalize_target(raw: str) -> str | None:
