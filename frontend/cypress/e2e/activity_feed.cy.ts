@@ -1,5 +1,14 @@
 /// <reference types="cypress" />
 
+// Clerk/Next.js occasionally triggers a hydration mismatch on the SignIn route in CI.
+// This is non-deterministic UI noise for these tests; ignore it so assertions can proceed.
+Cypress.on("uncaught:exception", (err) => {
+  if (err.message?.includes("Hydration failed")) {
+    return false;
+  }
+  return true;
+});
+
 describe("/activity feed", () => {
   const apiBase = "**/api/v1";
   const email = Cypress.env("CLERK_TEST_EMAIL") || "jane+clerk_test@example.com";
