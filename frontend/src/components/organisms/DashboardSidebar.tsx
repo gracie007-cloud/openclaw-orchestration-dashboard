@@ -57,122 +57,139 @@ export function DashboardSidebar() {
   return (
     <aside className="flex h-full w-64 flex-col border-r border-slate-200 bg-white">
       <div className="flex-1 px-3 py-4">
-        <p className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
-          Navigation
-        </p>
-        <nav className="mt-3 space-y-1 text-sm">
-          <Link
-            href="/dashboard"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname === "/dashboard"
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <BarChart3 className="h-4 w-4" />
-            Dashboard
-          </Link>
-          {isAdmin ? (
-            <Link
-              href="/gateways"
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-                pathname.startsWith("/gateways")
-                  ? "bg-blue-100 text-blue-800 font-medium"
-                  : "hover:bg-slate-100",
-              )}
-            >
-              <Network className="h-4 w-4" />
-              Gateways
-            </Link>
-          ) : null}
-          <Link
-            href="/board-groups"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/board-groups")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <Folder className="h-4 w-4" />
-            Board groups
-          </Link>
-          <Link
-            href="/boards"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/boards")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <LayoutGrid className="h-4 w-4" />
-            Boards
-          </Link>
-          <Link
-            href="/tags"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/tags")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <Tags className="h-4 w-4" />
-            Tags
-          </Link>
-          <Link
-            href="/organization"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/organization")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <Building2 className="h-4 w-4" />
-            Organization
-          </Link>
-          <Link
-            href="/approvals"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/approvals")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <CheckCircle2 className="h-4 w-4" />
-            Approvals
-          </Link>
-          <Link
-            href="/activity"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/activity")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <Activity className="h-4 w-4" />
-            Live feed
-          </Link>
-          {isAdmin ? (
-            <Link
-              href="/agents"
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-                pathname.startsWith("/agents")
-                  ? "bg-blue-100 text-blue-800 font-medium"
-                  : "hover:bg-slate-100",
-              )}
-            >
-              <Bot className="h-4 w-4" />
-              Agents
-            </Link>
-          ) : null}
+        <p className="px-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Navigation</p>
+        <nav className="mt-3 space-y-4 text-sm">
+          <div>
+            <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Overview</p>
+            <div className="mt-1 space-y-1">
+              <Link
+                href="/dashboard"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                  pathname === "/dashboard"
+                    ? "bg-blue-100 text-blue-800 font-medium"
+                    : "hover:bg-slate-100",
+                )}
+              >
+                <BarChart3 className="h-4 w-4" />
+                Dashboard
+              </Link>
+              <Link
+                href="/activity"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                  pathname.startsWith("/activity")
+                    ? "bg-blue-100 text-blue-800 font-medium"
+                    : "hover:bg-slate-100",
+                )}
+              >
+                <Activity className="h-4 w-4" />
+                Live feed
+              </Link>
+            </div>
+          </div>
+
+          <div>
+            <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Boards</p>
+            <div className="mt-1 space-y-1">
+              <Link
+                href="/board-groups"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                  pathname.startsWith("/board-groups")
+                    ? "bg-blue-100 text-blue-800 font-medium"
+                    : "hover:bg-slate-100",
+                )}
+              >
+                <Folder className="h-4 w-4" />
+                Board groups
+              </Link>
+              <Link
+                href="/boards"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                  pathname.startsWith("/boards")
+                    ? "bg-blue-100 text-blue-800 font-medium"
+                    : "hover:bg-slate-100",
+                )}
+              >
+                <LayoutGrid className="h-4 w-4" />
+                Boards
+              </Link>
+              <Link
+                href="/tags"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                  pathname.startsWith("/tags")
+                    ? "bg-blue-100 text-blue-800 font-medium"
+                    : "hover:bg-slate-100",
+                )}
+              >
+                <Tags className="h-4 w-4" />
+                Tags
+              </Link>
+              <Link
+                href="/approvals"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                  pathname.startsWith("/approvals")
+                    ? "bg-blue-100 text-blue-800 font-medium"
+                    : "hover:bg-slate-100",
+                )}
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                Approvals
+              </Link>
+            </div>
+          </div>
+
+          <div>
+            <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Administration
+            </p>
+            <div className="mt-1 space-y-1">
+              <Link
+                href="/organization"
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                  pathname.startsWith("/organization")
+                    ? "bg-blue-100 text-blue-800 font-medium"
+                    : "hover:bg-slate-100",
+                )}
+              >
+                <Building2 className="h-4 w-4" />
+                Organization
+              </Link>
+              {isAdmin ? (
+                <Link
+                  href="/gateways"
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                    pathname.startsWith("/gateways")
+                      ? "bg-blue-100 text-blue-800 font-medium"
+                      : "hover:bg-slate-100",
+                  )}
+                >
+                  <Network className="h-4 w-4" />
+                  Gateways
+                </Link>
+              ) : null}
+              {isAdmin ? (
+                <Link
+                  href="/agents"
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                    pathname.startsWith("/agents")
+                      ? "bg-blue-100 text-blue-800 font-medium"
+                      : "hover:bg-slate-100",
+                  )}
+                >
+                  <Bot className="h-4 w-4" />
+                  Agents
+                </Link>
+              ) : null}
+            </div>
+          </div>
         </nav>
       </div>
       <div className="border-t border-slate-200 p-4">
