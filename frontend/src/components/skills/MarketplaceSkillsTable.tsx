@@ -19,15 +19,14 @@ import { truncateText as truncate } from "@/lib/formatters";
 
 type MarketplaceSkillsTableProps = {
   skills: MarketplaceSkillCardRead[];
+  installedGatewayNamesBySkillId?: Record<string, string[]>;
   isLoading?: boolean;
   sorting?: SortingState;
   onSortingChange?: OnChangeFn<SortingState>;
   stickyHeader?: boolean;
   disableSorting?: boolean;
-  canInstallActions: boolean;
   isMutating?: boolean;
   onSkillClick?: (skill: MarketplaceSkillCardRead) => void;
-  onUninstall: (skill: MarketplaceSkillCardRead) => void;
   onDelete?: (skill: MarketplaceSkillCardRead) => void;
   getEditHref?: (skill: MarketplaceSkillCardRead) => string;
   emptyState?: Omit<DataTableEmptyState, "icon"> & {
@@ -88,15 +87,14 @@ const toPackDetailHref = (packUrl: string): string => {
 
 export function MarketplaceSkillsTable({
   skills,
+  installedGatewayNamesBySkillId,
   isLoading = false,
   sorting,
   onSortingChange,
   stickyHeader = false,
   disableSorting = false,
-  canInstallActions,
   isMutating = false,
   onSkillClick,
-  onUninstall,
   onDelete,
   getEditHref,
   emptyState,
@@ -129,7 +127,10 @@ export function MarketplaceSkillsTable({
             ) : (
               <p className="text-sm font-medium text-slate-900">{row.original.name}</p>
             )}
-            <p className="mt-1 line-clamp-2 text-xs text-slate-500">
+            <p
+              className="mt-1 line-clamp-2 text-xs text-slate-500"
+              title={row.original.description || "No description provided."}
+            >
               {row.original.description || "No description provided."}
             </p>
           </div>
@@ -171,11 +172,37 @@ export function MarketplaceSkillsTable({
       {
         accessorKey: "source",
         header: "Source",
-        cell: ({ row }) => (
-          <span className="text-sm text-slate-700" title={row.original.source || ""}>
-            {truncate(row.original.source || "unknown", 36)}
-          </span>
-        ),
+        cell: ({ row }) => {
+          const sourceHref = row.original.source || row.original.source_url;
+          return (
+            <Link
+              href={sourceHref}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm font-medium text-slate-700 hover:text-blue-600 hover:underline"
+              title={sourceHref}
+            >
+              {truncate(sourceHref, 36)}
+            </Link>
+          );
+        },
+      },
+      {
+        id: "installed_on",
+        header: "Installed On",
+        enableSorting: false,
+        cell: ({ row }) => {
+          const installedOn = installedGatewayNamesBySkillId?.[row.original.id] ?? [];
+          if (installedOn.length === 0) {
+            return <span className="text-sm text-slate-500">-</span>;
+          }
+          const installedOnText = installedOn.join(", ");
+          return (
+            <span className="text-sm text-slate-700" title={installedOnText}>
+              {installedOnText}
+            </span>
+          );
+        },
       },
       {
         accessorKey: "updated_at",
@@ -188,17 +215,6 @@ export function MarketplaceSkillsTable({
         enableSorting: false,
         cell: ({ row }) => (
           <div className="flex justify-end gap-2">
-            {row.original.installed ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onUninstall(row.original)}
-                disabled={isMutating || !canInstallActions}
-              >
-                Uninstall
-              </Button>
-            ) : null}
             {getEditHref ? (
               <Link
                 href={getEditHref(row.original)}
@@ -225,12 +241,11 @@ export function MarketplaceSkillsTable({
 
     return baseColumns;
   }, [
-    canInstallActions,
     getEditHref,
+    installedGatewayNamesBySkillId,
     isMutating,
     onDelete,
     onSkillClick,
-    onUninstall,
   ]);
 
   // eslint-disable-next-line react-hooks/incompatible-library

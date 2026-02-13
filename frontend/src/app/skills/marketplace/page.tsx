@@ -76,6 +76,9 @@ export default function SkillsMarketplacePage() {
   const [gatewayInstalledById, setGatewayInstalledById] = useState<
     Record<string, boolean>
   >({});
+  const [installedGatewayNamesBySkillId, setInstalledGatewayNamesBySkillId] = useState<
+    Record<string, string[]>
+  >({});
   const [isGatewayStatusLoading, setIsGatewayStatusLoading] = useState(false);
   const [gatewayStatusError, setGatewayStatusError] = useState<string | null>(null);
   const [installingGatewayId, setInstallingGatewayId] = useState<string | null>(null);
@@ -156,6 +159,55 @@ export default function SkillsMarketplacePage() {
     });
   }, [selectedPack, skills]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadInstalledGatewaysBySkill = async () => {
+      if (!isSignedIn || !isAdmin || gateways.length === 0 || skills.length === 0) {
+        setInstalledGatewayNamesBySkillId({});
+        return;
+      }
+
+      try {
+        const responses = await Promise.all(
+          gateways.map(async (gateway) => {
+            const response = await listMarketplaceSkillsApiV1SkillsMarketplaceGet({
+              gateway_id: gateway.id,
+            });
+            return { gatewayName: gateway.name, response };
+          }),
+        );
+
+        if (cancelled) return;
+
+        const nextInstalledGatewayNamesBySkillId: Record<string, string[]> = {};
+        for (const skill of skills) {
+          nextInstalledGatewayNamesBySkillId[skill.id] = [];
+        }
+
+        for (const { gatewayName, response } of responses) {
+          if (response.status !== 200) continue;
+          for (const skill of response.data) {
+            if (!skill.installed) continue;
+            if (!nextInstalledGatewayNamesBySkillId[skill.id]) continue;
+            nextInstalledGatewayNamesBySkillId[skill.id].push(gatewayName);
+          }
+        }
+
+        setInstalledGatewayNamesBySkillId(nextInstalledGatewayNamesBySkillId);
+      } catch {
+        if (cancelled) return;
+        setInstalledGatewayNamesBySkillId({});
+      }
+    };
+
+    void loadInstalledGatewaysBySkill();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gateways, isAdmin, isSignedIn, skills]);
+
   const installMutation =
     useInstallMarketplaceSkillApiV1SkillsMarketplaceSkillIdInstallPost<ApiError>(
       {
@@ -168,6 +220,18 @@ export default function SkillsMarketplacePage() {
               ...previous,
               [variables.params.gateway_id]: true,
             }));
+            const gatewayName =
+              gateways.find((gateway) => gateway.id === variables.params.gateway_id)?.name;
+            if (gatewayName) {
+              setInstalledGatewayNamesBySkillId((previous) => {
+                const installedOn = previous[variables.skillId] ?? [];
+                if (installedOn.includes(gatewayName)) return previous;
+                return {
+                  ...previous,
+                  [variables.skillId]: [...installedOn, gatewayName],
+                };
+              });
+            }
           },
         },
       },
@@ -178,10 +242,25 @@ export default function SkillsMarketplacePage() {
     useUninstallMarketplaceSkillApiV1SkillsMarketplaceSkillIdUninstallPost<ApiError>(
       {
         mutation: {
-          onSuccess: async () => {
+          onSuccess: async (_, variables) => {
             await queryClient.invalidateQueries({
               queryKey: ["/api/v1/skills/marketplace"],
             });
+            setGatewayInstalledById((previous) => ({
+              ...previous,
+              [variables.params.gateway_id]: false,
+            }));
+            const gatewayName =
+              gateways.find((gateway) => gateway.id === variables.params.gateway_id)?.name;
+            if (gatewayName) {
+              setInstalledGatewayNamesBySkillId((previous) => {
+                const installedOn = previous[variables.skillId] ?? [];
+                return {
+                  ...previous,
+                  [variables.skillId]: installedOn.filter((name) => name !== gatewayName),
+                };
+              });
+            }
           },
         },
       },
@@ -247,14 +326,24 @@ export default function SkillsMarketplacePage() {
 
   const isMutating = installMutation.isPending || uninstallMutation.isPending;
 
-  const handleInstallToGateway = async (gatewayId: string) => {
+  const handleGatewayInstallAction = async (
+    gatewayId: string,
+    isInstalled: boolean,
+  ) => {
     if (!selectedSkill) return;
     setInstallingGatewayId(gatewayId);
     try {
-      await installMutation.mutateAsync({
-        skillId: selectedSkill.id,
-        params: { gateway_id: gatewayId },
-      });
+      if (isInstalled) {
+        await uninstallMutation.mutateAsync({
+          skillId: selectedSkill.id,
+          params: { gateway_id: gatewayId },
+        });
+      } else {
+        await installMutation.mutateAsync({
+          skillId: selectedSkill.id,
+          params: { gateway_id: gatewayId },
+        });
+      }
     } finally {
       setInstallingGatewayId(null);
     }
@@ -300,19 +389,13 @@ export default function SkillsMarketplacePage() {
               <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                 <MarketplaceSkillsTable
                   skills={visibleSkills}
+                  installedGatewayNamesBySkillId={installedGatewayNamesBySkillId}
                   isLoading={skillsQuery.isLoading}
                   sorting={sorting}
                   onSortingChange={onSortingChange}
                   stickyHeader
-                  canInstallActions={Boolean(resolvedGatewayId)}
                   isMutating={isMutating}
                   onSkillClick={setSelectedSkill}
-                  onUninstall={(skill) =>
-                    uninstallMutation.mutate({
-                      skillId: skill.id,
-                      params: { gateway_id: resolvedGatewayId },
-                    })
-                  }
                   emptyState={{
                     title: "No marketplace skills yet",
                     description: "Add packs first, then synced skills will appear here.",
@@ -359,8 +442,9 @@ export default function SkillsMarketplacePage() {
             ) : (
               gateways.map((gateway) => {
                 const isInstalled = gatewayInstalledById[gateway.id] === true;
-                const isInstalling =
-                  installMutation.isPending && installingGatewayId === gateway.id;
+                const isUpdatingGateway =
+                  installingGatewayId === gateway.id &&
+                  (installMutation.isPending || uninstallMutation.isPending);
                 return (
                   <div
                     key={gateway.id}
@@ -368,17 +452,23 @@ export default function SkillsMarketplacePage() {
                   >
                     <div>
                       <p className="text-sm font-medium text-slate-900">{gateway.name}</p>
-                      <p className="text-xs text-slate-500">
-                        {isInstalled ? "Installed" : "Not installed"}
-                      </p>
                     </div>
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => void handleInstallToGateway(gateway.id)}
-                      disabled={isInstalled || installMutation.isPending}
+                      variant={isInstalled ? "outline" : "primary"}
+                      onClick={() =>
+                        void handleGatewayInstallAction(gateway.id, isInstalled)
+                      }
+                      disabled={installMutation.isPending || uninstallMutation.isPending}
                     >
-                      {isInstalled ? "Installed" : isInstalling ? "Installing..." : "Install"}
+                      {isInstalled
+                        ? isUpdatingGateway
+                          ? "Uninstalling..."
+                          : "Uninstall"
+                        : isUpdatingGateway
+                          ? "Installing..."
+                          : "Install"}
                     </Button>
                   </div>
                 );
@@ -387,8 +477,8 @@ export default function SkillsMarketplacePage() {
             {gatewayStatusError ? (
               <p className="text-sm text-rose-600">{gatewayStatusError}</p>
             ) : null}
-            {installMutation.error ? (
-              <p className="text-sm text-rose-600">{installMutation.error.message}</p>
+            {mutationError ? (
+              <p className="text-sm text-rose-600">{mutationError}</p>
             ) : null}
           </div>
 
