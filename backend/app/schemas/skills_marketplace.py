@@ -31,7 +31,7 @@ class SkillPackCreate(SQLModel):
     metadata_: dict[str, object] = Field(default_factory=dict, alias="metadata")
 
     class Config:
-        allow_population_by_field_name = True
+        validate_by_name = True
 
 
 class MarketplaceSkillRead(SQLModel):
@@ -48,7 +48,7 @@ class MarketplaceSkillRead(SQLModel):
     metadata_: dict[str, object] = Field(default_factory=dict, alias="metadata")
 
     class Config:
-        allow_population_by_field_name = True
+        validate_by_name = True
 
     created_at: datetime
     updated_at: datetime
@@ -66,7 +66,7 @@ class SkillPackRead(SQLModel):
     metadata_: dict[str, object] = Field(default_factory=dict, alias="metadata")
 
     class Config:
-        allow_population_by_field_name = True
+        validate_by_name = True
 
     skill_count: int = 0
     created_at: datetime
