@@ -7,6 +7,7 @@ DB-backed workflows (template sync, lead-agent record creation) live in
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from abc import ABC, abstractmethod
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.gateways import Gateway
@@ -53,6 +55,8 @@ from app.services.openclaw.shared import GatewayAgentIdentity
 
 if TYPE_CHECKING:
     from app.models.users import User
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,28 +113,62 @@ def _heartbeat_config(agent: Agent) -> dict[str, Any]:
     return merged
 
 
+def _tools_exec_host_patch(config_data: dict[str, Any]) -> dict[str, Any] | None:
+    """Ensure ``tools.exec.host`` is set to ``"gateway"`` so agents can run commands.
+
+    Without this, heartbeat-driven agents cannot execute ``curl``, ``bash``, or
+    any other shell command — making HEARTBEAT.md instructions unexecutable.
+    Returns a partial ``tools`` dict to merge into ``config.patch``, or ``None``
+    if the setting is already present.
+    """
+    tools = config_data.get("tools")
+    if not isinstance(tools, dict):
+        return {"exec": {"host": "gateway"}}
+    exec_cfg = tools.get("exec")
+    if not isinstance(exec_cfg, dict):
+        return {"exec": {"host": "gateway"}}
+    if exec_cfg.get("host"):
+        return None  # Already configured — don't override user choice.
+    return {"exec": {"host": "gateway"}}
+
+
 def _channel_heartbeat_visibility_patch(config_data: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a minimal patch ensuring channel default heartbeat visibility is configured.
+
+    Gateways may have existing channel config; we only want to fill missing keys rather than
+    overwrite operator intent. Returns `None` if no change is needed, otherwise returns a shallow
+    patch dict suitable for a config merge."""
     channels = config_data.get("channels")
     if not isinstance(channels, dict):
         return {"defaults": {"heartbeat": DEFAULT_CHANNEL_HEARTBEAT_VISIBILITY.copy()}}
+
     defaults = channels.get("defaults")
     if not isinstance(defaults, dict):
         return {"defaults": {"heartbeat": DEFAULT_CHANNEL_HEARTBEAT_VISIBILITY.copy()}}
+
     heartbeat = defaults.get("heartbeat")
     if not isinstance(heartbeat, dict):
         return {"defaults": {"heartbeat": DEFAULT_CHANNEL_HEARTBEAT_VISIBILITY.copy()}}
+
     merged = dict(heartbeat)
     changed = False
     for key, value in DEFAULT_CHANNEL_HEARTBEAT_VISIBILITY.items():
         if key not in merged:
             merged[key] = value
             changed = True
+
     if not changed:
         return None
+
     return {"defaults": {"heartbeat": merged}}
 
 
 def _template_env() -> Environment:
+    """Create the Jinja environment used for gateway template rendering.
+
+    Note: we intentionally disable auto-escaping so markdown/plaintext templates render verbatim.
+    """
+
     return Environment(
         loader=FileSystemLoader(_templates_root()),
         # Render markdown verbatim (HTML escaping makes it harder for agents to read).
@@ -145,19 +183,34 @@ def _heartbeat_template_name(agent: Agent) -> str:
 
 
 def _workspace_path(agent: Agent, workspace_root: str) -> str:
+    """Return the absolute on-disk workspace directory for an agent.
+
+    Why this exists:
+    - We derive the folder name from a stable *agent key* (ultimately rooted in ids/session keys)
+      rather than display names to avoid collisions.
+    - We preserve a historical gateway-main naming quirk to avoid moving existing directories.
+
+    This path is later interpolated into template files (TOOLS.md, etc.) that agents treat as the
+    source of truth for where to read/write.
+    """
+
     if not workspace_root:
         msg = "gateway_workspace_root is required"
         raise ValueError(msg)
+
     root = workspace_root.rstrip("/")
+
     # Use agent key derived from session key when possible. This prevents collisions for
     # lead agents (session key includes board id) even if multiple boards share the same
     # display name (e.g. "Lead Agent").
     key = _agent_key(agent)
+
     # Backwards-compat: gateway-main agents historically used session keys that encoded
     # "gateway-<id>" while the gateway agent id is "mc-gateway-<id>".
     # Keep the on-disk workspace path stable so existing provisioned files aren't moved.
     if key.startswith("mc-gateway-"):
         key = key.removeprefix("mc-")
+
     return f"{root}/workspace-{slugify(key)}"
 
 
@@ -317,7 +370,7 @@ def _build_context(
     workspace_root = gateway.workspace_root
     workspace_path = _workspace_path(agent, workspace_root)
     session_key = agent.openclaw_session_id or ""
-    base_url = settings.base_url or "REPLACE_WITH_BASE_URL"
+    base_url = settings.base_url
     main_session_key = GatewayAgentIdentity.session_key(gateway)
     identity_context = _identity_context(agent)
     user_context = _user_context(user)
@@ -333,6 +386,7 @@ def _build_context(
         "board_goal_confirmed": str(board.goal_confirmed).lower(),
         "board_rule_require_approval_for_done": str(board.require_approval_for_done).lower(),
         "board_rule_require_review_before_done": str(board.require_review_before_done).lower(),
+        "board_rule_comment_required_for_review": str(board.comment_required_for_review).lower(),
         "board_rule_block_status_changes_with_pending_approval": str(
             board.block_status_changes_with_pending_approval
         ).lower(),
@@ -357,7 +411,7 @@ def _build_main_context(
     auth_token: str,
     user: User | None,
 ) -> dict[str, str]:
-    base_url = settings.base_url or "REPLACE_WITH_BASE_URL"
+    base_url = settings.base_url
     identity_context = _identity_context(agent)
     user_context = _user_context(user)
     return {
@@ -523,6 +577,7 @@ class OpenClawGatewayControlPlane(GatewayControlPlane):
         # Prefer an idempotent "create then update" flow.
         # - Avoids enumerating gateway agents for existence checks.
         # - Ensures we always hit the "create" RPC first, per lifecycle expectations.
+        agent_just_created = False
         try:
             await openclaw_call(
                 "agents.create",
@@ -532,21 +587,47 @@ class OpenClawGatewayControlPlane(GatewayControlPlane):
                 },
                 config=self._config,
             )
+            agent_just_created = True
         except OpenClawGatewayError as exc:
             message = str(exc).lower()
             if not any(
                 marker in message for marker in ("already", "exist", "duplicate", "conflict")
             ):
                 raise
-        await openclaw_call(
-            "agents.update",
-            {
-                "agentId": registration.agent_id,
-                "name": registration.name,
-                "workspace": registration.workspace_path,
-            },
-            config=self._config,
-        )
+
+        # Gateway hot-reload has a ~500ms debounce after agents.create writes to disk.
+        # agents.update arriving before the reload completes returns "agent not found".
+        # Wait for the reload window before attempting the update.
+        if agent_just_created:
+            await asyncio.sleep(0.75)
+
+        # Retry agents.update only when this call just created the agent.
+        # If create reported "already exists", "not found" should fail fast.
+        _update_retries = 5
+        _update_delay = 0.5
+        for _attempt in range(_update_retries):
+            try:
+                await openclaw_call(
+                    "agents.update",
+                    {
+                        "agentId": registration.agent_id,
+                        "name": registration.name,
+                        "workspace": registration.workspace_path,
+                    },
+                    config=self._config,
+                )
+                break
+            except OpenClawGatewayError as exc:
+                should_retry = (
+                    agent_just_created
+                    and _is_missing_agent_error(exc)
+                    and _attempt < _update_retries - 1
+                )
+                if should_retry:
+                    await asyncio.sleep(_update_delay)
+                    _update_delay = min(_update_delay * 2, 4.0)
+                    continue
+                raise
         await self.patch_agent_heartbeats(
             [(registration.agent_id, registration.workspace_path, registration.heartbeat)],
         )
@@ -609,10 +690,20 @@ class OpenClawGatewayControlPlane(GatewayControlPlane):
         entry_by_id = _heartbeat_entry_map(entries)
         new_list = _updated_agent_list(raw_list, entry_by_id)
 
-        patch: dict[str, Any] = {"agents": {"list": new_list}}
         channels_patch = _channel_heartbeat_visibility_patch(config_data)
+        tools_patch = _tools_exec_host_patch(config_data)
+
+        # Skip config.patch entirely when nothing changed — avoids an unnecessary
+        # gateway SIGUSR1 restart that rotates agent tokens and breaks active sessions.
+        if new_list == raw_list and channels_patch is None and tools_patch is None:
+            logger.debug("patch_agent_heartbeats: no changes detected, skipping config.patch")
+            return
+
+        patch: dict[str, Any] = {"agents": {"list": new_list}}
         if channels_patch is not None:
             patch["channels"] = channels_patch
+        if tools_patch is not None:
+            patch["tools"] = tools_patch
         params = {"raw": json.dumps(patch)}
         if base_hash:
             params["baseHash"] = base_hash
@@ -970,7 +1061,12 @@ def _control_plane_for_gateway(gateway: Gateway) -> OpenClawGatewayControlPlane:
         msg = "Gateway url is required"
         raise OpenClawGatewayError(msg)
     return OpenClawGatewayControlPlane(
-        GatewayClientConfig(url=gateway.url, token=gateway.token),
+        GatewayClientConfig(
+            url=gateway.url,
+            token=gateway.token,
+            allow_insecure_tls=gateway.allow_insecure_tls,
+            disable_device_pairing=gateway.disable_device_pairing,
+        ),
     )
 
 
@@ -1099,7 +1195,12 @@ class OpenClawGatewayProvisioner:
         if not wake:
             return
 
-        client_config = GatewayClientConfig(url=gateway.url, token=gateway.token)
+        client_config = GatewayClientConfig(
+            url=gateway.url,
+            token=gateway.token,
+            allow_insecure_tls=gateway.allow_insecure_tls,
+            disable_device_pairing=gateway.disable_device_pairing,
+        )
         await ensure_session(session_key, config=client_config, label=agent.name)
         verb = wakeup_verb or ("provisioned" if action == "provision" else "updated")
         await send_message(

@@ -3,10 +3,17 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ "$SCRIPT_NAME" == "bash" || "$SCRIPT_NAME" == "-bash" ]]; then
+  SCRIPT_NAME="install.sh"
+fi
+REPO_ROOT=""
+REPO_GIT_URL="${OPENCLAW_REPO_URL:-https://github.com/abhi1693/openclaw-mission-control.git}"
+REPO_CLONE_REF="${OPENCLAW_REPO_REF:-}"
+REPO_DIR_NAME="openclaw-mission-control"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
 LOG_DIR="$STATE_DIR/openclaw-mission-control-install"
 
+PLATFORM=""
 LINUX_DISTRO=""
 PKG_MANAGER=""
 PKG_UPDATED=0
@@ -47,6 +54,66 @@ die() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+repo_has_layout() {
+  local dir="$1"
+  [[ -f "$dir/Makefile" && -f "$dir/compose.yml" ]]
+}
+
+resolve_script_directory() {
+  local script_source=""
+  local script_dir=""
+
+  if [[ -n "${BASH_SOURCE:-}" && -n "${BASH_SOURCE[0]:-}" ]]; then
+    script_source="${BASH_SOURCE[0]}"
+  elif [[ -n "${0:-}" && "${0:-}" != "bash" ]]; then
+    script_source="$0"
+  fi
+
+  [[ -n "$script_source" ]] || return 1
+
+  script_dir="$(cd -- "$(dirname -- "$script_source")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s\n' "$script_dir"
+}
+
+bootstrap_repo_checkout() {
+  local target_dir="$PWD/$REPO_DIR_NAME"
+
+  if ! command_exists git; then
+    die "Git is required for one-line bootstrap installs. Install git and re-run."
+  fi
+  if [[ -e "$target_dir" ]]; then
+    die "Cannot auto-clone into $target_dir because it already exists. Run ./install.sh from that repository or remove the directory."
+  fi
+
+  info "Repository checkout not found. Cloning into $target_dir ..."
+  if [[ -n "$REPO_CLONE_REF" ]]; then
+    git clone --depth 1 --branch "$REPO_CLONE_REF" "$REPO_GIT_URL" "$target_dir"
+  else
+    git clone --depth 1 "$REPO_GIT_URL" "$target_dir"
+  fi
+
+  REPO_ROOT="$target_dir"
+  SCRIPT_NAME="install.sh"
+}
+
+resolve_repo_root() {
+  local script_dir=""
+
+  if script_dir="$(resolve_script_directory)"; then
+    if repo_has_layout "$script_dir"; then
+      REPO_ROOT="$script_dir"
+      return
+    fi
+  fi
+
+  if repo_has_layout "$PWD"; then
+    REPO_ROOT="$PWD"
+    return
+  fi
+
+  bootstrap_repo_checkout
 }
 
 usage() {
@@ -209,6 +276,9 @@ install_command_hint() {
     pacman)
       printf 'sudo pacman -Sy --noconfirm %s' "${packages[*]}"
       ;;
+    brew)
+      printf 'brew install %s' "${packages[*]}"
+      ;;
     *)
       printf 'install packages manually: %s' "${packages[*]}"
       ;;
@@ -218,10 +288,21 @@ install_command_hint() {
 detect_platform() {
   local uname_s
   uname_s="$(uname -s)"
-  if [[ "$uname_s" != "Linux" ]]; then
-    die "Unsupported platform: $uname_s. Linux is required."
+  if [[ "$uname_s" == "Darwin" ]]; then
+    PLATFORM="darwin"
+    PKG_MANAGER="brew"
+    if ! command_exists brew; then
+      die "Homebrew is required on macOS. Install from https://brew.sh, then re-run this script."
+    fi
+    info "Detected platform: darwin (macOS), package manager: Homebrew"
+    return
   fi
 
+  if [[ "$uname_s" != "Linux" ]]; then
+    die "Unsupported platform: $uname_s. Linux and macOS (Darwin) are supported."
+  fi
+
+  PLATFORM="linux"
   if [[ ! -r /etc/os-release ]]; then
     die "Cannot detect Linux distribution (/etc/os-release missing)."
   fi
@@ -267,6 +348,9 @@ install_packages() {
         PKG_UPDATED=1
       fi
       as_root apt-get install -y "${packages[@]}"
+      ;;
+    brew)
+      brew install "${packages[@]}"
       ;;
     dnf|yum|zypper|pacman)
       die "Automatic package install is not implemented yet for '$PKG_MANAGER'. Run: $(install_command_hint "$PKG_MANAGER" "${packages[@]}")"
@@ -351,7 +435,7 @@ confirm() {
     input="${input:-n}"
   fi
 
-  case "${input,,}" in
+  case "$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')" in
     y|yes)
       return 0
       ;;
@@ -376,9 +460,33 @@ generate_token() {
   fi
 }
 
+# Portable relative path: print path of $1 relative to $2 (both absolute).
+relative_to() {
+  local target="$1"
+  local base="$2"
+  local rel
+  if [[ -z "$base" || -z "$target" ]]; then
+    printf '%s' "$target"
+    return
+  fi
+  base="${base%/}"
+  target="${target%/}"
+  if [[ "$target" == "$base" ]]; then
+    printf ''
+    return
+  fi
+  rel="${target#$base/}"
+  if [[ "$rel" != "$target" ]]; then
+    printf '%s' "$rel"
+  else
+    printf '%s' "$target"
+  fi
+}
+
 ensure_file_from_example() {
   local target_file="$1"
   local example_file="$2"
+  local display_path
 
   if [[ -f "$target_file" ]]; then
     return
@@ -389,7 +497,12 @@ ensure_file_from_example() {
   fi
 
   cp "$example_file" "$target_file"
-  info "Created $(realpath --relative-to="$REPO_ROOT" "$target_file" 2>/dev/null || printf '%s' "$target_file")"
+  if command_exists realpath && realpath --relative-to="$REPO_ROOT" "$target_file" >/dev/null 2>&1; then
+    display_path="$(realpath --relative-to="$REPO_ROOT" "$target_file" 2>/dev/null)"
+  else
+    display_path="$(relative_to "$(cd -- "$(dirname -- "$target_file")" && pwd -P)/$(basename "$target_file")" "$REPO_ROOT")"
+  fi
+  info "Created $display_path"
 }
 
 upsert_env_value() {
@@ -474,8 +587,26 @@ ensure_nodejs() {
     die "Cannot continue without Node.js >= 22."
   fi
 
+  if [[ "$PLATFORM" == "darwin" ]]; then
+    brew upgrade node@22 2>/dev/null || brew install node@22
+    if [[ -d "$(brew --prefix node@22 2>/dev/null)/bin" ]]; then
+      export PATH="$(brew --prefix node@22)/bin:$PATH"
+    fi
+    if ! command_exists node || ! command_exists npm; then
+      die 'Node.js/npm installation failed. Ensure Homebrew bin is in PATH (e.g. eval "$(brew shellenv)").'
+    fi
+    hash -r || true
+    node_version="$(node -v || true)"
+    node_major="${node_version#v}"
+    node_major="${node_major%%.*}"
+    if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 22)); then
+      die "Detected Node.js $node_version. Node.js >= 22 is required. Install with: brew install node@22 and ensure $(brew --prefix node@22 2>/dev/null || echo '/opt/homebrew/opt/node@22')/bin is in PATH."
+    fi
+    return
+  fi
+
   if [[ "$PKG_MANAGER" != "apt" ]]; then
-    die "Node.js auto-install is currently implemented for apt-based distros only. Install Node.js >= 22 manually, then rerun installer. Suggested command: $(install_command_hint "$PKG_MANAGER" nodejs npm)"
+    die "Node.js auto-install is currently implemented for apt-based distros and macOS only. Install Node.js >= 22 manually, then rerun installer. Suggested command: $(install_command_hint "$PKG_MANAGER" nodejs npm)"
   fi
 
   install_packages ca-certificates curl gnupg
@@ -503,6 +634,10 @@ ensure_nodejs() {
 ensure_docker() {
   if command_exists docker && docker compose version >/dev/null 2>&1; then
     return
+  fi
+
+  if [[ "$PLATFORM" == "darwin" ]]; then
+    die "Docker and Docker Compose v2 are required on macOS. Install Docker Desktop from https://www.docker.com/products/docker-desktop/, start it, then re-run this script."
   fi
 
   info "Docker and Docker Compose v2 are required."
@@ -599,8 +734,8 @@ start_local_services() {
 }
 
 ensure_repo_layout() {
-  [[ -f "$REPO_ROOT/Makefile" ]] || die "Run $SCRIPT_NAME from repository root."
-  [[ -f "$REPO_ROOT/compose.yml" ]] || die "Missing compose.yml in repository root."
+  [[ -f "$REPO_ROOT/Makefile" ]] || die "Missing Makefile in expected repository root: $REPO_ROOT"
+  [[ -f "$REPO_ROOT/compose.yml" ]] || die "Missing compose.yml in expected repository root: $REPO_ROOT"
 }
 
 main() {
@@ -615,12 +750,17 @@ main() {
   local database_url=""
   local start_services="yes"
 
+  resolve_repo_root
   cd "$REPO_ROOT"
   ensure_repo_layout
   parse_args "$@"
 
   detect_platform
-  info "Platform detected: linux ($LINUX_DISTRO)"
+  if [[ "$PLATFORM" == "darwin" ]]; then
+    info "Platform detected: darwin (macOS)"
+  else
+    info "Platform detected: linux ($LINUX_DISTRO)"
+  fi
 
   if [[ -n "$FORCE_MODE" ]]; then
     deployment_mode="$FORCE_MODE"
@@ -737,6 +877,16 @@ main() {
   upsert_env_value "$REPO_ROOT/.env" "CORS_ORIGINS" "http://$public_host:$frontend_port"
 
   if [[ "$deployment_mode" == "docker" ]]; then
+    ensure_file_from_example "$REPO_ROOT/backend/.env" "$REPO_ROOT/backend/.env.example"
+
+    # Docker services load backend/.env; ensure required runtime values are populated.
+    upsert_env_value "$REPO_ROOT/backend/.env" "ENVIRONMENT" "prod"
+    upsert_env_value "$REPO_ROOT/backend/.env" "AUTH_MODE" "local"
+    upsert_env_value "$REPO_ROOT/backend/.env" "LOCAL_AUTH_TOKEN" "$local_auth_token"
+    upsert_env_value "$REPO_ROOT/backend/.env" "CORS_ORIGINS" "http://$public_host:$frontend_port"
+    upsert_env_value "$REPO_ROOT/backend/.env" "BASE_URL" "http://$public_host:$backend_port"
+    upsert_env_value "$REPO_ROOT/backend/.env" "DB_AUTO_MIGRATE" "true"
+
     upsert_env_value "$REPO_ROOT/.env" "DB_AUTO_MIGRATE" "true"
 
     info "Starting production-like Docker stack..."

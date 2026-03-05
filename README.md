@@ -1,6 +1,6 @@
 # OpenClaw Mission Control
 
-[![CI](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml/badge.svg)](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml)
+[![CI](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml/badge.svg)](https://github.com/abhi1693/openclaw-mission-control/actions/workflows/ci.yml) ![Static Badge](https://img.shields.io/badge/Join-Slack-active?style=flat&color=blue&link=https%3A%2F%2Fjoin.slack.com%2Ft%2Foc-mission-control%2Fshared_invite%2Fzt-3qpcm57xh-AI9C~smc3MDBVzEhvwf7gg)
 
 OpenClaw Mission Control is the centralized operations and governance platform for running OpenClaw across teams and organizations, with unified visibility, approval controls, and gateway-aware orchestration.
 It gives operators a single interface for work orchestration, agent and gateway management, approval-driven governance, and API-backed automation.
@@ -57,6 +57,8 @@ If you haven't cloned the repo yet, you can run the installer in one line:
 curl -fsSL https://raw.githubusercontent.com/abhi1693/openclaw-mission-control/master/install.sh | bash
 ```
 
+This clones the repository into `./openclaw-mission-control` if no local checkout is found in your current directory.
+
 If you already cloned the repo:
 
 ```bash
@@ -76,6 +78,7 @@ Installer support matrix: [`docs/installer-support.md`](./docs/installer-support
 
 ### Prerequisites
 
+- **Supported platforms**: Linux and macOS. On macOS, Docker mode requires [Docker Desktop](https://www.docker.com/products/docker-desktop/); local mode requires [Homebrew](https://brew.sh) and Node.js 22+.
 - Docker Engine
 - Docker Compose v2 (`docker compose`)
 
@@ -88,12 +91,43 @@ cp .env.example .env
 Before startup:
 
 - Set `LOCAL_AUTH_TOKEN` to a non-placeholder value (minimum 50 characters) when `AUTH_MODE=local`.
-- Ensure `NEXT_PUBLIC_API_URL` is reachable from your browser.
+- `NEXT_PUBLIC_API_URL=auto` (default) resolves to `http(s)://<current-host>:8000`.
+  - Set an explicit URL when your API is behind a reverse proxy or non-default port.
 
 ### 2. Start Mission Control
 
 ```bash
 docker compose -f compose.yml --env-file .env up -d --build
+```
+
+If you are iterating on the UI in Docker and want automatic frontend rebuilds on
+source changes, run:
+
+```bash
+docker compose -f compose.yml --env-file .env up --build --watch
+```
+
+Notes:
+
+- Compose Watch requires Docker Compose **2.22.0+**.
+- You can also run watch separately after startup:
+
+```bash
+docker compose -f compose.yml --env-file .env up -d --build
+docker compose -f compose.yml --env-file .env watch
+```
+
+After pulling new changes, rebuild and recreate all services:
+
+```bash
+docker compose -f compose.yml --env-file .env up -d --build --force-recreate
+```
+
+For a fully clean rebuild (no cached build layers):
+
+```bash
+docker compose -f compose.yml --env-file .env build --no-cache --pull
+docker compose -f compose.yml --env-file .env up -d --force-recreate
 ```
 
 ### 3. Open the application

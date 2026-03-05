@@ -9,7 +9,7 @@ WORKDIR /app
 
 # System deps (keep minimal)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && apt-get install -y --no-install-recommends curl ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
 
 # Install uv (https://github.com/astral-sh/uv)
@@ -41,6 +41,10 @@ COPY backend/app ./app
 # Copy provisioning templates.
 # In-repo these live at `backend/templates/`; runtime path is `/app/templates`.
 COPY backend/templates ./templates
+
+# Copy worker scripts.
+# In-repo these live at `scripts/`; runtime path is `/app/scripts`.
+COPY scripts ./scripts
 
 # Default API port
 EXPOSE 8000

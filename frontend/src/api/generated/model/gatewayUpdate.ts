@@ -9,8 +9,10 @@
  * Payload for partial gateway updates.
  */
 export interface GatewayUpdate {
+  allow_insecure_tls?: boolean | null;
+  disable_device_pairing?: boolean | null;
   name?: string | null;
-  url?: string | null;
   token?: string | null;
+  url?: string | null;
   workspace_root?: string | null;
 }

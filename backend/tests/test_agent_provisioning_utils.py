@@ -119,6 +119,8 @@ class _GatewayStub:
     url: str
     token: str | None
     workspace_root: str
+    allow_insecure_tls: bool = False
+    disable_device_pairing: bool = False
 
 
 @pytest.mark.asyncio
@@ -229,6 +231,8 @@ async def test_provision_overwrites_user_md_on_first_provision(monkeypatch):
         url: str
         token: str | None
         workspace_root: str
+        allow_insecure_tls: bool = False
+        disable_device_pairing: bool = False
 
     class _Manager(agent_provisioning.BaseAgentLifecycleManager):
         def _agent_id(self, agent):
@@ -296,6 +300,8 @@ async def test_set_agent_files_update_preserves_user_md_even_when_size_zero():
         url: str
         token: str | None
         workspace_root: str
+        allow_insecure_tls: bool = False
+        disable_device_pairing: bool = False
 
     class _Manager(agent_provisioning.BaseAgentLifecycleManager):
         def _agent_id(self, agent):
@@ -360,6 +366,8 @@ async def test_set_agent_files_update_preserves_nonmissing_user_md():
         url: str
         token: str | None
         workspace_root: str
+        allow_insecure_tls: bool = False
+        disable_device_pairing: bool = False
 
     class _Manager(agent_provisioning.BaseAgentLifecycleManager):
         def _agent_id(self, agent):
@@ -424,6 +432,8 @@ async def test_set_agent_files_update_overwrite_writes_preserved_user_md():
         url: str
         token: str | None
         workspace_root: str
+        allow_insecure_tls: bool = False
+        disable_device_pairing: bool = False
 
     class _Manager(agent_provisioning.BaseAgentLifecycleManager):
         def _agent_id(self, agent):
@@ -518,6 +528,89 @@ async def test_control_plane_upsert_agent_handles_already_exists(monkeypatch):
 
     assert calls[0][0] == "agents.create"
     assert calls[1][0] == "agents.update"
+
+
+@pytest.mark.asyncio
+async def test_control_plane_upsert_agent_retries_update_after_create_race(monkeypatch):
+    calls: list[tuple[str, dict[str, object] | None]] = []
+    sleeps: list[float] = []
+    update_attempts = 0
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def _fake_openclaw_call(method, params=None, config=None):
+        nonlocal update_attempts
+        _ = config
+        calls.append((method, params))
+        if method == "agents.create":
+            return {"ok": True}
+        if method == "agents.update":
+            update_attempts += 1
+            if update_attempts < 3:
+                raise agent_provisioning.OpenClawGatewayError('agent "board-agent-a" not found')
+            return {"ok": True}
+        if method == "config.get":
+            return {"hash": None, "config": {"agents": {"list": []}}}
+        if method == "config.patch":
+            return {"ok": True}
+        raise AssertionError(f"Unexpected method: {method}")
+
+    monkeypatch.setattr(agent_provisioning, "openclaw_call", _fake_openclaw_call)
+    monkeypatch.setattr(agent_provisioning.asyncio, "sleep", _fake_sleep)
+    cp = agent_provisioning.OpenClawGatewayControlPlane(
+        agent_provisioning.GatewayClientConfig(url="ws://gateway.example/ws", token=None),
+    )
+    await cp.upsert_agent(
+        agent_provisioning.GatewayAgentRegistration(
+            agent_id="board-agent-a",
+            name="Board Agent A",
+            workspace_path="/tmp/workspace-board-agent-a",
+            heartbeat={"every": "10m", "target": "last", "includeReasoning": False},
+        ),
+    )
+
+    update_calls = [method for method, _ in calls if method == "agents.update"]
+    assert len(update_calls) == 3
+    assert sleeps == [0.75, 0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_control_plane_upsert_agent_missing_after_already_exists_fails_fast(monkeypatch):
+    calls: list[tuple[str, dict[str, object] | None]] = []
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def _fake_openclaw_call(method, params=None, config=None):
+        _ = config
+        calls.append((method, params))
+        if method == "agents.create":
+            raise agent_provisioning.OpenClawGatewayError("already exists")
+        if method == "agents.update":
+            raise agent_provisioning.OpenClawGatewayError('agent "board-agent-a" not found')
+        raise AssertionError(f"Unexpected method: {method}")
+
+    monkeypatch.setattr(agent_provisioning, "openclaw_call", _fake_openclaw_call)
+    monkeypatch.setattr(agent_provisioning.asyncio, "sleep", _fake_sleep)
+    cp = agent_provisioning.OpenClawGatewayControlPlane(
+        agent_provisioning.GatewayClientConfig(url="ws://gateway.example/ws", token=None),
+    )
+
+    with pytest.raises(agent_provisioning.OpenClawGatewayError):
+        await cp.upsert_agent(
+            agent_provisioning.GatewayAgentRegistration(
+                agent_id="board-agent-a",
+                name="Board Agent A",
+                workspace_path="/tmp/workspace-board-agent-a",
+                heartbeat={"every": "10m", "target": "last", "includeReasoning": False},
+            ),
+        )
+
+    update_calls = [method for method, _ in calls if method == "agents.update"]
+    assert len(update_calls) == 1
+    assert sleeps == []
 
 
 def test_is_missing_agent_error_matches_gateway_agent_not_found() -> None:

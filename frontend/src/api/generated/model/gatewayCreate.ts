@@ -9,8 +9,10 @@
  * Payload for creating a gateway configuration.
  */
 export interface GatewayCreate {
+  allow_insecure_tls?: boolean;
+  disable_device_pairing?: boolean;
   name: string;
+  token?: string | null;
   url: string;
   workspace_root: string;
-  token?: string | null;
 }
